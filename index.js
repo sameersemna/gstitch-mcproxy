@@ -1,22 +1,22 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const { execSync } = require("child_process");
 
-function loadEnvFile(envPath = path.resolve(process.cwd(), '.env')) {
+function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
   if (!fs.existsSync(envPath)) {
     return;
   }
 
-  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+  const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
+    if (!trimmed || trimmed.startsWith("#")) {
       continue;
     }
 
-    const separatorIndex = trimmed.indexOf('=');
+    const separatorIndex = trimmed.indexOf("=");
     if (separatorIndex === -1) {
       continue;
     }
@@ -40,25 +40,55 @@ function loadEnvFile(envPath = path.resolve(process.cwd(), '.env')) {
 
 loadEnvFile();
 
-const STITCH_URL = 'https://stitch.googleapis.com/mcp';
-const STITCH_API_KEY = process.env.STITCH_API_KEY;
-const DEFAULT_STITCH_PROJECT_ID = process.env.STITCH_PROJECT_ID;
+const STITCH_URL = "https://stitch.googleapis.com/mcp";
+let STITCH_API_KEY = process.env.STITCH_API_KEY;
+let DEFAULT_STITCH_PROJECT_ID = process.env.STITCH_PROJECT_ID;
 const MCP_SERVER_PORT = process.env.MCP_SERVER_PORT || 8787;
 
-if (!STITCH_API_KEY) {
-  console.log('⚠️ No API key configured, will use OAuth tokens from gcloud');
-  process.exit(1);
-} else if (!DEFAULT_STITCH_PROJECT_ID) {
-  console.log('⚠️ No default project ID configured, will rely on X-Stitch-Project-Id header or gcloud defaults');
-  process.exit(1);
+function parseAuthHeader(authHeader) {
+  if (!authHeader || typeof authHeader !== "string") {
+    return { apiKey: null, projectId: null };
+  }
+
+  const match = authHeader.match(/^\s*basic\s+(.+)\s*$/i);
+  if (!match) {
+    return { apiKey: null, projectId: null };
+  }
+
+  try {
+    const decoded = Buffer.from(match[1], "base64").toString("utf8");
+    const separatorIndex = decoded.indexOf(":");
+    if (separatorIndex === -1) {
+      return { apiKey: null, projectId: null };
+    }
+
+    const projectId = decoded.slice(0, separatorIndex);
+    const apiKey = decoded.slice(separatorIndex + 1);
+
+    return {
+      apiKey: apiKey || null,
+      projectId: projectId || null,
+    };
+  } catch {
+    return { apiKey: null, projectId: null };
+  }
+}
+
+if (!STITCH_API_KEY && !DEFAULT_STITCH_PROJECT_ID) {
+  console.log(
+    "ℹ️ No credentials in .env. Will accept them from request headers:",
+  );
+  console.log("   - STITCH_API_KEY: your API key");
+  console.log("   - STITCH_PROJECT_ID: your project id");
+  console.log("   - gcloud fallback is OFF by default (set ENABLE_GCLOUD_FALLBACK=1)");
 }
 
 function getAccessToken() {
   try {
-    return execSync('gcloud auth print-access-token').toString().trim();
+    return execSync("gcloud auth print-access-token").toString().trim();
   } catch (error) {
-    console.error('❌ gcloud auth failed. Run: gcloud auth login');
-    process.exit(1);
+    const details = error?.stderr?.toString?.().trim() || error.message;
+    throw new Error(`gcloud auth failed. ${details}`);
   }
 }
 
@@ -71,39 +101,37 @@ function getCachedToken() {
   if (!cachedToken || now - lastFetch > 5 * 60 * 1000) {
     cachedToken = getAccessToken();
     lastFetch = now;
-    console.log('🔄 Refreshed OAuth token');
+    console.log("🔄 Refreshed OAuth token");
   }
 
   return cachedToken;
 }
 
 function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
   res.end(JSON.stringify(payload));
 }
 
 function sendText(res, statusCode, text, headers = {}) {
   res.writeHead(statusCode, {
-    'Content-Type': 'text/plain; charset=utf-8',
+    "Content-Type": "text/plain; charset=utf-8",
     ...headers,
   });
   res.end(text);
 }
 
-function buildForwardHeaders(req, token) {
-  const projectId = req.headers['x-stitch-project-id'] || DEFAULT_STITCH_PROJECT_ID;
-
+function buildForwardHeaders(req, token, apiKey, projectId) {
   return {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(STITCH_API_KEY ? { 'X-Goog-Api-Key': STITCH_API_KEY } : {}),
-    'Content-Type': 'application/json',
-    Accept: req.headers.accept || 'application/json, text/event-stream',
-    ...(projectId ? { 'X-Stitch-Project-Id': projectId } : {}),
+    ...(apiKey ? { "X-Goog-Api-Key": apiKey } : {}),
+    "Content-Type": "application/json",
+    Accept: req.headers.accept || "application/json, text/event-stream",
+    ...(projectId ? { "X-Stitch-Project-Id": projectId } : {}),
   };
 }
 
 async function readRequestBody(req) {
-  if (req.method === 'GET' || req.method === 'HEAD') {
+  if (req.method === "GET" || req.method === "HEAD") {
     return undefined;
   }
 
@@ -112,20 +140,25 @@ async function readRequestBody(req) {
     chunks.push(chunk);
   }
 
-  return chunks.length ? Buffer.concat(chunks).toString('utf8') : undefined;
+  return chunks.length ? Buffer.concat(chunks).toString("utf8") : undefined;
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  if (req.method === 'GET' && url.pathname === '/.well-known/oauth-protected-resource') {
+  if (
+    req.method === "GET" &&
+    url.pathname === "/.well-known/oauth-protected-resource"
+  ) {
     return sendJson(res, 200, {
       resource: `http://localhost:${MCP_SERVER_PORT}`,
       authorization_servers: [`http://localhost:${MCP_SERVER_PORT}`],
     });
   }
 
-  if (req.method === 'GET' && url.pathname === '/.well-known/openid-configuration') {
+  if (
+    req.method === "GET" && url.pathname === "/.well-known/openid-configuration"
+  ) {
     return sendJson(res, 200, {
       issuer: `http://localhost:${MCP_SERVER_PORT}`,
       authorization_endpoint: `http://localhost:${MCP_SERVER_PORT}/auth`,
@@ -133,41 +166,119 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  if (req.method === 'GET' && url.pathname === '/auth') {
-    return sendText(res, 200, 'OK');
+  if (req.method === "GET" && url.pathname === "/auth") {
+    return sendText(res, 200, "OK");
   }
 
-  if (req.method === 'POST' && url.pathname === '/token') {
-    return sendJson(res, 200, { access_token: 'local-proxy-token' });
+  if (req.method === "POST" && url.pathname === "/token") {
+    return sendJson(res, 200, { access_token: "local-proxy-token" });
   }
 
-  if (url.pathname === '/mcp') {
+  if (url.pathname === "/mcp") {
     try {
-      const token = STITCH_API_KEY ? null : getCachedToken();
+      // Accept credentials from request headers or fallback to env
+      let apiKey = STITCH_API_KEY;
+      let projectId = DEFAULT_STITCH_PROJECT_ID;
+
+      if (req.headers["stitch_api_key"]) {
+        apiKey = req.headers["stitch_api_key"];
+      }
+      if (req.headers["stitch_project_id"]) {
+        projectId = req.headers["stitch_project_id"];
+      }
+
+      if (req.headers["x-stitch-api-key"]) {
+        apiKey = req.headers["x-stitch-api-key"];
+      }
+      if (req.headers["x-stitch-project-id"]) {
+        projectId = req.headers["x-stitch-project-id"];
+      }
+
+      if (req.headers.authorization) {
+        const { apiKey: headerApiKey, projectId: headerProjectId } =
+          parseAuthHeader(req.headers.authorization);
+        apiKey = headerApiKey || apiKey;
+        projectId = headerProjectId || projectId;
+      }
+
+      // For security, do not allow API key in query params or body, only header or env var
+      if (
+        req.url.includes("stitch.googleapis.com") &&
+        (req.url.includes("key=") || req.url.includes("api_key="))
+      ) {
+        console.warn("⚠️ API key should not be sent in query parameters");
+      }
+
+      const gcloudFallbackEnabled = process.env.ENABLE_GCLOUD_FALLBACK === "1";
+
+      if (!apiKey && !gcloudFallbackEnabled) {
+        return sendText(
+          res,
+          401,
+          "❌ Missing API key. Configure mcp.json headers.STITCH_API_KEY or set STITCH_API_KEY",
+        );
+      }
+
+      if (!projectId) {
+        return sendText(
+          res,
+          401,
+          "❌ Missing project ID. Configure mcp.json headers.STITCH_PROJECT_ID or set STITCH_PROJECT_ID",
+        );
+      }
+      // add logs to ./logs folder for any requests to /mcp for debugging
+      const logEntry = `${
+        new Date().toISOString()
+      } - ${req.method} ${req.url} - API_KEY: ${
+        apiKey ? "configured" : "none"
+      } - PROJECT_ID: ${projectId || "none"}\n`;
+      fs.appendFile(
+        path.resolve(process.cwd(), "logs", "proxy.log"),
+        logEntry,
+        (err) => {
+          if (err) {
+            console.error("❌ Failed to write log:", err);
+          }
+        },
+      );
+
+      let token = null;
+      if (!apiKey && gcloudFallbackEnabled && req.method !== "GET") {
+        token = getCachedToken();
+      }
       const body = await readRequestBody(req);
 
       const response = await fetch(STITCH_URL, {
         method: req.method,
-        headers: buildForwardHeaders(req, token),
+        headers: buildForwardHeaders(req, token, apiKey, projectId),
         body,
       });
 
       const text = await response.text();
       return sendText(res, response.status, text, {
-        'Content-Type': response.headers.get('content-type') || 'application/json',
+        "Content-Type": response.headers.get("content-type") ||
+          "application/json",
       });
     } catch (error) {
-      console.error('❌ Proxy error:', error);
-      return sendText(res, 500, error.message || 'Unknown proxy error');
+      console.error("❌ Proxy error:", error);
+      return sendText(res, 500, error.message || "Unknown proxy error");
     }
   }
 
-  return sendText(res, 404, 'Not found');
+  return sendText(res, 404, "Not found");
 });
 
 server.listen(MCP_SERVER_PORT, () => {
+  const hasEnvConfig = STITCH_API_KEY && DEFAULT_STITCH_PROJECT_ID;
   console.log(
-    `🚀 Stitch MCP Proxy, ${STITCH_API_KEY ? 'configured' : 'none'} using PROJECT_ID: ${DEFAULT_STITCH_PROJECT_ID}, is running at:`
+    `🚀 Stitch MCP Proxy (${hasEnvConfig ? "env-configured" : "header-based"}) running at:`,
   );
   console.log(`👉 http://localhost:${MCP_SERVER_PORT}/mcp`);
+  if (hasEnvConfig) {
+    console.log(`   Using project: ${DEFAULT_STITCH_PROJECT_ID}`);
+  } else {
+    console.log(
+      "   Waiting for STITCH_API_KEY/STITCH_PROJECT_ID headers",
+    );
+  }
 });
