@@ -25,7 +25,13 @@ fi
 echo "1) Well-known check"
 curl -sS "${MCP_SERVER_URL}/.well-known/openid-configuration" | jq
 
-echo "2) MCP initialize"
+echo "2) Health check"
+curl -sS "${MCP_SERVER_URL}/health" | jq
+
+echo "3) Instructions JSON check"
+curl -sS -H 'Accept: application/json' "${MCP_SERVER_URL}/instructions" | jq '.title, .sections | length? // .'
+
+echo "4) MCP initialize"
 curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
   -H "STITCH_PROJECT_ID: ${STITCH_PROJECT_ID}" \
@@ -33,7 +39,7 @@ curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H 'Accept: application/json, text/event-stream' \
   --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl-test","version":"1.0"}}}' | jq
 
-echo "3) tools/list"
+echo "5) tools/list"
 curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
   -H "STITCH_PROJECT_ID: ${STITCH_PROJECT_ID}" \
@@ -41,7 +47,7 @@ curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H 'Accept: application/json, text/event-stream' \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | jq
 
-echo "4) list_screens"
+echo "6) list_screens"
 curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
   -H "STITCH_PROJECT_ID: ${STITCH_PROJECT_ID}" \

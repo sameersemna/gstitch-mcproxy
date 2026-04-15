@@ -45,6 +45,25 @@ const INSTRUCTIONS_PATH = path.resolve(process.cwd(), "INSTRUCTIONS.md");
 let STITCH_API_KEY = process.env.STITCH_API_KEY;
 let DEFAULT_STITCH_PROJECT_ID = process.env.STITCH_PROJECT_ID;
 const MCP_SERVER_PORT = process.env.MCP_SERVER_PORT || 8787;
+const LOG_ENABLED = String(process.env.LOG_ENABLED || "false").toLowerCase() === "true";
+const LOG_LEVEL = String(process.env.LOG_LEVEL || "info").toLowerCase();
+const LOG_DIR = path.resolve(process.cwd(), process.env.LOG_DIR || "logs");
+const LOG_FILE_NAME = process.env.LOG_FILE_NAME || "proxy.log";
+const LOG_MAX_BODY_CHARS = Number.parseInt(process.env.LOG_MAX_BODY_CHARS || "20000", 10);
+const LOG_MAX_FILE_SIZE_BYTES = Number.parseInt(process.env.LOG_MAX_FILE_SIZE_BYTES || "5242880", 10);
+const LOG_MAX_ROTATED_FILES = Number.parseInt(process.env.LOG_MAX_ROTATED_FILES || "5", 10);
+const LOG_SKIP_MCP_GET = String(process.env.LOG_SKIP_MCP_GET || "true").toLowerCase() === "true";
+const LOG_SLOW_REQUEST_MS = Number.parseInt(process.env.LOG_SLOW_REQUEST_MS || "2000", 10);
+const LOG_VERY_SLOW_REQUEST_MS = Number.parseInt(process.env.LOG_VERY_SLOW_REQUEST_MS || "5000", 10);
+const LOG_SKIP_MCP_METHODS = new Set(
+  String(
+    process.env.LOG_SKIP_MCP_METHODS ||
+      "initialize,notifications/initialized,notifications/progress,ping",
+  )
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+);
 
 function escapeHtml(value) {
   return String(value)
@@ -57,6 +76,303 @@ function escapeHtml(value) {
 
 function formatInlineMarkdown(text) {
   return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+function ensureDirectory(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function sanitizePathSegment(value) {
+  return String(value || "unknown-project").replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function isPositiveInteger(value, fallbackValue) {
+  return Number.isInteger(value) && value > 0 ? value : fallbackValue;
+}
+
+function rotateLogFileIfNeeded(filePath) {
+  const maxFileSizeBytes = isPositiveInteger(LOG_MAX_FILE_SIZE_BYTES, 5242880);
+  const maxRotatedFiles = isPositiveInteger(LOG_MAX_ROTATED_FILES, 5);
+
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+
+  const { size } = fs.statSync(filePath);
+  if (size < maxFileSizeBytes) {
+    return;
+  }
+
+  for (let index = maxRotatedFiles; index >= 1; index -= 1) {
+    const sourcePath = `${filePath}.${index}`;
+    const targetPath = `${filePath}.${index + 1}`;
+
+    if (!fs.existsSync(sourcePath)) {
+      continue;
+    }
+
+    if (index === maxRotatedFiles) {
+      fs.unlinkSync(sourcePath);
+      continue;
+    }
+
+    fs.renameSync(sourcePath, targetPath);
+  }
+
+  fs.renameSync(filePath, `${filePath}.1`);
+}
+
+function stripAnsiSequences(value) {
+  return String(value).replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function truncateText(value, maxChars) {
+  const safeMaxChars = isPositiveInteger(maxChars, 20000);
+  if (value.length <= safeMaxChars) {
+    return value;
+  }
+
+  return `${value.slice(0, safeMaxChars)}\n\n[truncated ${value.length - safeMaxChars} chars]`;
+}
+
+function printableRatio(value) {
+  if (!value) {
+    return 1;
+  }
+
+  let printableCount = 0;
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    const isPrintable = code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126);
+    if (isPrintable) {
+      printableCount += 1;
+    }
+  }
+
+  return printableCount / value.length;
+}
+
+function looksLikeOpaqueBlob(value) {
+  const compact = value.replace(/\s+/g, "");
+  return compact.length > 256 && /^[A-Za-z0-9+/=_-]+$/.test(compact);
+}
+
+function normalizeBodyForLogging(value, contentType) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+
+  const rawValue = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const sanitizedValue = stripAnsiSequences(rawValue)
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .trim();
+
+  if (!sanitizedValue) {
+    return "";
+  }
+
+  const normalizedContentType = String(contentType || "").toLowerCase();
+  const isStructuredText =
+    normalizedContentType.includes("json") ||
+    normalizedContentType.includes("text/") ||
+    normalizedContentType.includes("xml") ||
+    normalizedContentType.includes("javascript") ||
+    normalizedContentType.includes("graphql") ||
+    normalizedContentType.includes("event-stream") ||
+    normalizedContentType.includes("x-www-form-urlencoded");
+
+  if (normalizedContentType && !isStructuredText && printableRatio(sanitizedValue) < 0.9) {
+    return `[omitted non-text body: ${normalizedContentType}]`;
+  }
+
+  if (printableRatio(sanitizedValue) < 0.85) {
+    return "[omitted unreadable body]";
+  }
+
+  if (looksLikeOpaqueBlob(sanitizedValue)) {
+    return "[omitted opaque token/blob body]";
+  }
+
+  if (
+    normalizedContentType.includes("json") ||
+    sanitizedValue.startsWith("{") ||
+    sanitizedValue.startsWith("[")
+  ) {
+    try {
+      return truncateText(JSON.stringify(JSON.parse(sanitizedValue), null, 2), LOG_MAX_BODY_CHARS);
+    } catch {
+      return truncateText(sanitizedValue, LOG_MAX_BODY_CHARS);
+    }
+  }
+
+  return truncateText(sanitizedValue, LOG_MAX_BODY_CHARS);
+}
+
+function parseJsonRpcMetadata(body) {
+  if (!body || typeof body !== "string") {
+    return { methods: [], ids: [] };
+  }
+
+  try {
+    const parsed = JSON.parse(body);
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+
+    return {
+      methods: messages
+        .map((message) => message?.method)
+        .filter((method) => typeof method === "string" && method.length > 0),
+      ids: messages
+        .map((message) => message?.id)
+        .filter((id) => id !== undefined && id !== null),
+    };
+  } catch {
+    return { methods: [], ids: [] };
+  }
+}
+
+function shouldSkipDetailedLog({ req, url, requestBody, responseStatus }) {
+  if (responseStatus >= 400) {
+    return false;
+  }
+
+  if (url.pathname === "/mcp" && req.method === "GET" && LOG_SKIP_MCP_GET) {
+    return true;
+  }
+
+  const { methods } = parseJsonRpcMetadata(requestBody);
+  if (!methods.length) {
+    return false;
+  }
+
+  return methods.every((method) => LOG_SKIP_MCP_METHODS.has(method));
+}
+
+function formatMethodsForSummary(requestBody) {
+  const { methods } = parseJsonRpcMetadata(requestBody);
+  return methods.length ? methods.join(",") : "unknown";
+}
+
+function classifyDuration(durationMs) {
+  const slowThreshold = isPositiveInteger(LOG_SLOW_REQUEST_MS, 2000);
+  const verySlowThreshold = isPositiveInteger(LOG_VERY_SLOW_REQUEST_MS, 5000);
+
+  if (durationMs >= verySlowThreshold) {
+    return "VERY_SLOW";
+  }
+
+  if (durationMs >= slowThreshold) {
+    return "SLOW";
+  }
+
+  return "NORMAL";
+}
+
+function generateRequestLogId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function redactHeaders(headers) {
+  const redactedHeaders = {};
+
+  for (const [key, value] of Object.entries(headers || {})) {
+    const lowerKey = key.toLowerCase();
+    if (
+      lowerKey.includes("authorization") ||
+      lowerKey.includes("api-key") ||
+      lowerKey === "stitch_api_key" ||
+      lowerKey === "x-goog-api-key"
+    ) {
+      redactedHeaders[key] = "[redacted]";
+      continue;
+    }
+
+    redactedHeaders[key] = value;
+  }
+
+  return redactedHeaders;
+}
+
+function appendSummaryLog(line) {
+  if (!LOG_ENABLED || (LOG_LEVEL !== "info" && LOG_LEVEL !== "debug")) {
+    return;
+  }
+
+  try {
+    ensureDirectory(LOG_DIR);
+    const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
+    rotateLogFileIfNeeded(logFilePath);
+    fs.appendFileSync(logFilePath, line);
+  } catch (error) {
+    console.error("❌ Failed to write summary log:", error);
+  }
+}
+
+function writeDetailedDebugLog({
+  requestLogId,
+  timestamp,
+  req,
+  url,
+  projectId,
+  requestBody,
+  requestContentType,
+  durationMs,
+  durationClass,
+  responseStatus,
+  responseHeaders,
+  responseBody,
+  error,
+}) {
+  if (!LOG_ENABLED || LOG_LEVEL !== "debug") {
+    return;
+  }
+
+  if (shouldSkipDetailedLog({ req, url, requestBody, responseStatus })) {
+    return;
+  }
+
+  try {
+    const projectLogDir = path.join(LOG_DIR, sanitizePathSegment(projectId));
+    ensureDirectory(projectLogDir);
+
+    const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+    const filePath = path.join(projectLogDir, `${fileTimestamp}-${requestLogId}.log`);
+    const content = [
+      `requestLogId: ${requestLogId}`,
+      `timestamp: ${timestamp}`,
+      `durationMs: ${durationMs ?? ""}`,
+      `durationClass: ${durationClass ?? ""}`,
+      `method: ${req.method}`,
+      `path: ${url.pathname}`,
+      `query: ${url.search || ""}`,
+      `projectId: ${projectId || "unknown"}`,
+      "",
+      "requestHeaders:",
+      JSON.stringify(redactHeaders(req.headers), null, 2),
+      "",
+      "requestBody:",
+      normalizeBodyForLogging(requestBody, requestContentType),
+      "",
+      `responseStatus: ${responseStatus || ""}`,
+      "responseHeaders:",
+      JSON.stringify(redactHeaders(responseHeaders), null, 2),
+      "",
+      "responseBody:",
+      normalizeBodyForLogging(responseBody, responseHeaders?.["content-type"]),
+      ...(error
+        ? [
+          "",
+          "error:",
+          error.stack || error.message || String(error),
+        ]
+        : []),
+      "",
+    ].join("\n");
+
+    fs.writeFileSync(filePath, content, "utf8");
+  } catch (writeError) {
+    console.error("❌ Failed to write debug log:", writeError);
+  }
 }
 
 function readInstructionsMarkdown() {
@@ -485,6 +801,41 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { access_token: "local-proxy-token" });
   }
 
+  if (req.method === "GET" && url.pathname === "/health") {
+    const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
+    const summaryLogExists = fs.existsSync(logFilePath);
+    const summaryLogSizeBytes = summaryLogExists ? fs.statSync(logFilePath).size : 0;
+
+    return sendJson(res, 200, {
+      status: "ok",
+      proxy: {
+        port: Number(MCP_SERVER_PORT),
+        stitchUrl: STITCH_URL,
+      },
+      credentials: {
+        envApiKeyConfigured: Boolean(STITCH_API_KEY),
+        envProjectConfigured: Boolean(DEFAULT_STITCH_PROJECT_ID),
+        gcloudFallbackEnabled: process.env.ENABLE_GCLOUD_FALLBACK === "1",
+      },
+      logging: {
+        enabled: LOG_ENABLED,
+        level: LOG_LEVEL,
+        dir: LOG_DIR,
+        fileName: LOG_FILE_NAME,
+        summaryLogExists,
+        summaryLogSizeBytes,
+        maxBodyChars: LOG_MAX_BODY_CHARS,
+        maxFileSizeBytes: LOG_MAX_FILE_SIZE_BYTES,
+        maxRotatedFiles: LOG_MAX_ROTATED_FILES,
+        skipMcpGet: LOG_SKIP_MCP_GET,
+        skipMcpMethods: Array.from(LOG_SKIP_MCP_METHODS),
+        slowRequestMs: LOG_SLOW_REQUEST_MS,
+        verySlowRequestMs: LOG_VERY_SLOW_REQUEST_MS,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   if (req.method === "GET" && url.pathname === "/instructions") {
     try {
       const markdown = readInstructionsMarkdown();
@@ -511,6 +862,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === "/mcp") {
+    const requestStartedAt = Date.now();
+    const requestLogId = generateRequestLogId();
     try {
       // Accept credentials from request headers or fallback to env
       let apiKey = STITCH_API_KEY;
@@ -562,26 +915,12 @@ const server = http.createServer(async (req, res) => {
           "❌ Missing project ID. Configure mcp.json headers.STITCH_PROJECT_ID or set STITCH_PROJECT_ID",
         );
       }
-      // add logs to ./logs folder for any requests to /mcp for debugging
-      const logEntry = `${
-        new Date().toISOString()
-      } - ${req.method} ${req.url} - API_KEY: ${
-        apiKey ? "configured" : "none"
-      } - PROJECT_ID: ${projectId || "none"}\n`;
-      fs.appendFile(
-        path.resolve(process.cwd(), "logs", "proxy.log"),
-        logEntry,
-        (err) => {
-          if (err) {
-            console.error("❌ Failed to write log:", err);
-          }
-        },
-      );
 
       let token = null;
       if (!apiKey && gcloudFallbackEnabled && req.method !== "GET") {
         token = getCachedToken();
       }
+      const timestamp = new Date().toISOString();
       const body = await readRequestBody(req);
 
       const response = await fetch(STITCH_URL, {
@@ -591,12 +930,56 @@ const server = http.createServer(async (req, res) => {
       });
 
       const text = await response.text();
+      const durationMs = Date.now() - requestStartedAt;
+      const durationClass = classifyDuration(durationMs);
+      const methodSummary = formatMethodsForSummary(body);
+      if (!(req.method === "GET" && url.pathname === "/mcp" && LOG_SKIP_MCP_GET)) {
+        appendSummaryLog(
+          `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
+            apiKey ? "configured" : "none"
+          } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass}\n`,
+        );
+      }
+      writeDetailedDebugLog({
+        requestLogId,
+        timestamp,
+        req,
+        url,
+        projectId,
+        requestBody: body,
+        requestContentType: req.headers["content-type"],
+        durationMs,
+        durationClass,
+        responseStatus: response.status,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
+        responseBody: text,
+      });
       return sendText(res, response.status, text, {
         "Content-Type": response.headers.get("content-type") ||
           "application/json",
       });
     } catch (error) {
       console.error("❌ Proxy error:", error);
+      const durationMs = Date.now() - requestStartedAt;
+      const durationClass = classifyDuration(durationMs);
+      appendSummaryLog(
+        `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 500 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: ${error.message || "Unknown proxy error"}\n`,
+      );
+      writeDetailedDebugLog({
+        requestLogId,
+        timestamp: new Date().toISOString(),
+        req,
+        url,
+        projectId: req.headers["stitch_project_id"] || req.headers["x-stitch-project-id"] || DEFAULT_STITCH_PROJECT_ID,
+        requestBody: undefined,
+        requestContentType: req.headers["content-type"],
+        durationMs,
+        durationClass,
+        responseStatus: 500,
+        responseHeaders: {},
+        responseBody: "",
+        error,
+      });
       return sendText(res, 500, error.message || "Unknown proxy error");
     }
   }
@@ -610,6 +993,24 @@ server.listen(MCP_SERVER_PORT, () => {
     `🚀 Stitch MCP Proxy (${hasEnvConfig ? "env-configured" : "header-based"}) running at:`,
   );
   console.log(`👉 http://localhost:${MCP_SERVER_PORT}/mcp`);
+  if (LOG_ENABLED) {
+    console.log(
+      `🪵 Logging enabled (${LOG_LEVEL}) -> ${path.join(LOG_DIR, LOG_FILE_NAME)}`,
+    );
+    if (LOG_LEVEL === "debug") {
+      console.log(
+        `   Debug caps: body=${LOG_MAX_BODY_CHARS} chars, file=${LOG_MAX_FILE_SIZE_BYTES} bytes, rotations=${LOG_MAX_ROTATED_FILES}`,
+      );
+      console.log(
+        `   Skip noise: GET /mcp=${LOG_SKIP_MCP_GET}, methods=${Array.from(LOG_SKIP_MCP_METHODS).join(",")}`,
+      );
+      console.log(
+        `   Slow thresholds: slow=${LOG_SLOW_REQUEST_MS}ms, very_slow=${LOG_VERY_SLOW_REQUEST_MS}ms`,
+      );
+    }
+  } else {
+    console.log("🪵 Logging disabled");
+  }
   if (hasEnvConfig) {
     console.log(`   Using project: ${DEFAULT_STITCH_PROJECT_ID}`);
   } else {
@@ -617,4 +1018,5 @@ server.listen(MCP_SERVER_PORT, () => {
       "   Waiting for STITCH_API_KEY/STITCH_PROJECT_ID headers",
     );
   }
+  console.log(`💓 Health endpoint: http://localhost:${MCP_SERVER_PORT}/health`);
 });
