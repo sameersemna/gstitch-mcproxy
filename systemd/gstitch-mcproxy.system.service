@@ -1,0 +1,19 @@
+[Unit]
+Description=gstitch-mcproxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__ROOT_DIR__
+ExecStart=/usr/bin/env bash __ROOT_DIR__/run.sh
+Restart=on-failure
+RestartSec=5
+Environment=HOME=__HOME_DIR__
+Environment=PATH=__HOME_DIR__/.n/bin:__HOME_DIR__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

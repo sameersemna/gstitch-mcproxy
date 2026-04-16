@@ -1,0 +1,17 @@
+[Unit]
+Description=gstitch-mcproxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT_DIR__
+ExecStart=/usr/bin/env bash __ROOT_DIR__/run.sh
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+Environment=PATH=%h/.n/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

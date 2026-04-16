@@ -88,6 +88,42 @@ Run the proxy:
 ./run.sh
 ```
 
+Install it as a systemd user service on Ubuntu:
+
+```bash
+chmod +x run.sh install-user-service.sh
+./install-user-service.sh
+```
+
+Useful service commands:
+
+```bash
+systemctl --user status gstitch-mcproxy
+systemctl --user restart gstitch-mcproxy
+journalctl --user -u gstitch-mcproxy -f
+```
+
+If you want the user service to keep running after logout, enable lingering once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Install it as a system service that starts automatically after reboot:
+
+```bash
+chmod +x run.sh install-system-service.sh
+./install-system-service.sh
+```
+
+Useful system service commands:
+
+```bash
+sudo systemctl status gstitch-mcproxy
+sudo systemctl restart gstitch-mcproxy
+sudo journalctl -u gstitch-mcproxy -f
+```
+
 If needed, make it executable once:
 
 ```bash
@@ -107,3 +143,16 @@ The test covers:
 - MCP initialize
 - tools/list
 - list_screens
+
+
+```bash
+sudo systemctl status gstitch-mcproxy --no-pager --lines=20
+sudo systemctl cat gstitch-mcproxy
+```
+
+Check if the service is enabled and active:
+```bash
+sudo systemctl is-enabled gstitch-mcproxy
+sudo systemctl is-active gstitch-mcproxy
+curl -fsS http://localhost:11401/health
+```

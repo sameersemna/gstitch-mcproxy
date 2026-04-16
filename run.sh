@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ROOT_DIR}/.env"
 
+# Include common user-managed Node locations so the script also works under systemd.
+export PATH="${HOME}/.n/bin:${HOME}/.local/bin:${PATH}"
+
 if [ -f "${ENV_FILE}" ]; then
   set -a
   source "${ENV_FILE}"
@@ -31,6 +34,15 @@ echo "  port: ${MCP_SERVER_PORT}"
 echo "  logs: ${LOG_PATH}"
 echo "  log level: ${LOG_LEVEL:-info}"
 
+NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
+
+if [ -z "${NODE_BIN}" ]; then
+  echo "Node.js was not found in PATH. Set NODE_BIN or update PATH before starting gstitch-mcproxy."
+  exit 1
+fi
+
+echo "  node: ${NODE_BIN}"
+
 if [ -n "${STITCH_API_KEY:-}" ] || [ -n "${STITCH_PROJECT_ID:-}" ]; then
   echo "  credentials: env-configured"
 else
@@ -38,4 +50,4 @@ else
 fi
 
 cd "${ROOT_DIR}"
-exec node index.js
+exec "${NODE_BIN}" index.js
