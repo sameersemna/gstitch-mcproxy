@@ -54,3 +54,23 @@ curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_screens","arguments":{"projectId":"'"${STITCH_PROJECT_ID}"'"}}}' | jq
+
+echo "7) Log viewer HTML check"
+curl -sS "${MCP_SERVER_URL}/logs" | head -5
+
+echo "8) Log viewer API check"
+curl -sS "${MCP_SERVER_URL}/api/logs" | jq '.summaryLog, (.projects | length)'
+
+echo "9) Summary log API check"
+curl -sS "${MCP_SERVER_URL}/api/logs/summary?limit=5" | jq '.total, (.lines | length)'
+
+echo "10) Path traversal protection check (expect 403)"
+HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "${MCP_SERVER_URL}/api/logs/../../../etc/passwd")
+if [ "$HTTP_CODE" = "403" ]; then
+  echo "   PASS: Path traversal blocked (HTTP $HTTP_CODE)"
+else
+  echo "   FAIL: Expected 403, got HTTP $HTTP_CODE"
+fi
+
+echo ""
+echo "All tests complete."

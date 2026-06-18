@@ -65,6 +65,18 @@ const LOG_SKIP_MCP_METHODS = new Set(
     .filter(Boolean),
 );
 
+// Log viewer configuration
+const LOG_VIEWER_ENABLED =
+  String(process.env.LOG_VIEWER_ENABLED || "true").toLowerCase() === "true";
+const LOG_VIEWER_MAX_FILE_BYTES = Number.parseInt(
+  process.env.LOG_VIEWER_MAX_FILE_BYTES || "10485760",
+  10,
+);
+const LOG_SUMMARY_MAX_LINES = Number.parseInt(
+  process.env.LOG_SUMMARY_MAX_LINES || "200",
+  10,
+);
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -84,6 +96,158 @@ function ensureDirectory(dirPath) {
 
 function sanitizePathSegment(value) {
   return String(value || "unknown-project").replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+// --- Log Viewer Helpers ---
+
+/**
+ * Safely resolves a log file path relative to LOG_DIR.
+ * Returns null if the path attempts to escape the logs directory.
+ */
+function resolveLogFilePath(projectId, filename) {
+  if (!projectId || !filename) {
+    return null;
+  }
+
+  // Reject obvious path traversal attempts in the raw segments
+  if (projectId.includes("..") || filename.includes("..")) {
+    return null;
+  }
+
+  const resolved = path.resolve(LOG_DIR, projectId, filename);
+  if (!resolved.startsWith(LOG_DIR + path.sep)) {
+    return null;
+  }
+
+  return resolved;
+}
+
+/**
+ * Scans the LOG_DIR for project subdirectories and their .log files.
+ * Returns a structured array sorted by project ID, with files sorted newest-first.
+ */
+function scanLogDirectory() {
+  if (!fs.existsSync(LOG_DIR)) {
+    return [];
+  }
+
+  try {
+    const entries = fs.readdirSync(LOG_DIR, { withFileTypes: true });
+    const projects = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const projectPath = path.join(LOG_DIR, entry.name);
+      const files = [];
+
+      try {
+        const fileEntries = fs.readdirSync(projectPath, { withFileTypes: true });
+
+        for (const fileEntry of fileEntries) {
+          if (!fileEntry.isFile() || !fileEntry.name.endsWith(".log")) {
+            continue;
+          }
+
+          const filePath = path.join(projectPath, fileEntry.name);
+          const stat = fs.statSync(filePath);
+
+          files.push({
+            name: fileEntry.name,
+            size: stat.size,
+            modified: stat.mtime.toISOString(),
+          });
+        }
+      } catch {
+        // Skip directories that can't be read
+        continue;
+      }
+
+      // Sort files newest first by name (timestamp-based naming)
+      files.sort((a, b) => b.name.localeCompare(a.name));
+
+      if (files.length > 0) {
+        projects.push({
+          projectId: entry.name,
+          fileCount: files.length,
+          files,
+        });
+      }
+    }
+
+    // Sort projects alphabetically
+    projects.sort((a, b) => a.projectId.localeCompare(b.projectId));
+    return projects;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Reads the summary log file and returns paginated lines.
+ */
+function readSummaryLogLines(limit, offset) {
+  const safeLimit = isPositiveInteger(limit, LOG_SUMMARY_MAX_LINES);
+  const safeOffset = Math.max(0, Number.isInteger(offset) ? offset : 0);
+
+  const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
+  if (!fs.existsSync(logFilePath)) {
+    return { lines: [], total: 0, offset: safeOffset };
+  }
+
+  try {
+    const content = fs.readFileSync(logFilePath, "utf8");
+    const allLines = content.split("\n");
+    // Remove trailing empty line from split if file ends with newline
+    if (allLines.length > 0 && allLines[allLines.length - 1] === "") {
+      allLines.pop();
+    }
+
+    const total = allLines.length;
+    const slice = allLines.slice(safeOffset, safeOffset + safeLimit);
+
+    return {
+      lines: slice.map((text, index) => ({
+        number: safeOffset + index + 1,
+        text,
+      })),
+      total,
+      offset: safeOffset,
+    };
+  } catch {
+    return { lines: [], total: 0, offset: safeOffset };
+  }
+}
+
+/**
+ * Reads a single log file by project ID and filename.
+ * Returns null if the file doesn't exist or exceeds size limits.
+ */
+function readLogFile(projectId, filename) {
+  const filePath = resolveLogFilePath(projectId, filename);
+  if (!filePath) {
+    return { error: "Invalid path", status: 403 };
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return { error: "File not found", status: 404 };
+  }
+
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > LOG_VIEWER_MAX_FILE_BYTES) {
+      return {
+        error: `File too large (${stat.size} bytes, max ${LOG_VIEWER_MAX_FILE_BYTES})`,
+        status: 413,
+      };
+    }
+
+    return { content: fs.readFileSync(filePath, "utf8"), size: stat.size };
+  } catch (error) {
+    return { error: error.message || "Failed to read file", status: 500 };
+  }
 }
 
 function isPositiveInteger(value, fallbackValue) {
@@ -665,6 +829,636 @@ function renderInstructionsHtml(data) {
 </html>`;
 }
 
+function renderLogsHtml() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Log Viewer — gstitch-mcproxy</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1020;
+        --panel: rgba(13, 19, 38, 0.88);
+        --panel-strong: rgba(19, 28, 55, 0.96);
+        --text: #e8eefc;
+        --muted: #a7b4d6;
+        --accent: #6ee7ff;
+        --accent-2: #8bffb0;
+        --border: rgba(148, 163, 184, 0.22);
+        --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+        --highlight-bg: rgba(254, 230, 136, 0.18);
+        --highlight-text: #fde68a;
+        --error-color: #fca5a5;
+        --success-color: #8bffb0;
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      body {
+        font-family: Inter, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(110, 231, 255, 0.12), transparent 30%),
+          linear-gradient(180deg, #08111f 0%, #050913 100%);
+        color: var(--text);
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      /* Header */
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 20px;
+        background: var(--panel-strong);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+
+      .header h1 {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .header .badge {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(110, 231, 255, 0.12);
+        color: var(--accent);
+      }
+
+      .header .spacer { flex: 1; }
+
+      .header input[type="text"] {
+        width: 280px;
+        padding: 7px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(6, 10, 20, 0.6);
+        color: var(--text);
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+
+      .header input[type="text"]:focus {
+        border-color: var(--accent);
+      }
+
+      .header button {
+        padding: 6px 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(110, 231, 255, 0.08);
+        color: var(--accent);
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+
+      .header button:hover {
+        background: rgba(110, 231, 255, 0.16);
+      }
+
+      /* Layout */
+      .layout {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      /* Sidebar */
+      .sidebar {
+        width: 300px;
+        min-width: 240px;
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .sidebar-tabs {
+        display: flex;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+
+      .sidebar-tab {
+        flex: 1;
+        padding: 10px;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: color 0.15s, border-color 0.15s;
+      }
+
+      .sidebar-tab.active {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+      }
+
+      .sidebar-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px 0;
+      }
+
+      .sidebar-content::-webkit-scrollbar { width: 6px; }
+      .sidebar-content::-webkit-scrollbar-track { background: transparent; }
+      .sidebar-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+      /* Project tree */
+      .project-item { user-select: none; }
+
+      .project-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--muted);
+        transition: background 0.1s, color 0.1s;
+      }
+
+      .project-header:hover {
+        background: rgba(110, 231, 255, 0.06);
+        color: var(--text);
+      }
+
+      .project-header .chevron {
+        font-size: 10px;
+        transition: transform 0.15s;
+        width: 14px;
+        text-align: center;
+      }
+
+      .project-header.expanded .chevron {
+        transform: rotate(90deg);
+      }
+
+      .project-header .count {
+        margin-left: auto;
+        font-size: 11px;
+        opacity: 0.5;
+      }
+
+      .project-files {
+        display: none;
+        padding-left: 10px;
+      }
+
+      .project-files.open { display: block; }
+
+      .file-item {
+        padding: 6px 14px 6px 30px;
+        font-size: 12px;
+        color: var(--muted);
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition: background 0.1s, color 0.1s;
+      }
+
+      .file-item:hover {
+        background: rgba(110, 231, 255, 0.06);
+        color: var(--text);
+      }
+
+      .file-item.active {
+        color: var(--accent);
+        background: rgba(110, 231, 255, 0.08);
+      }
+
+      .file-item .meta {
+        float: right;
+        font-size: 10px;
+        opacity: 0.45;
+      }
+
+      /* Summary log entry */
+      .summary-entry {
+        padding: 10px 14px;
+        font-size: 13px;
+        color: var(--muted);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: background 0.1s, color 0.1s;
+      }
+
+      .summary-entry:hover {
+        background: rgba(110, 231, 255, 0.06);
+        color: var(--text);
+      }
+
+      .summary-entry.active {
+        color: var(--accent);
+        background: rgba(110, 231, 255, 0.08);
+      }
+
+      .summary-entry .icon { font-size: 15px; }
+
+      /* Main content */
+      .main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .main-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(13, 19, 38, 0.5);
+        flex-shrink: 0;
+      }
+
+      .main-toolbar .file-name {
+        font-size: 12px;
+        color: var(--muted);
+        font-family: "SFMono-Regular", Consolas, monospace;
+      }
+
+      .main-toolbar .file-size {
+        font-size: 11px;
+        color: var(--muted);
+        opacity: 0.5;
+      }
+
+      .main-toolbar .spacer { flex: 1; }
+
+      .main-toolbar .status-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+
+      .main-toolbar .status-dot.loading { background: var(--accent); animation: pulse 1s infinite; }
+      .main-toolbar .status-dot.ready { background: var(--success-color); }
+      .main-toolbar .status-dot.error { background: var(--error-color); }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+      }
+
+      /* Terminal view */
+      .terminal {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px 0;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 12.5px;
+        line-height: 1.65;
+        background: rgba(4, 7, 14, 0.5);
+      }
+
+      .terminal::-webkit-scrollbar { width: 8px; }
+      .terminal::-webkit-scrollbar-track { background: transparent; }
+      .terminal::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+      .log-line {
+        display: flex;
+        padding: 0 16px;
+        min-height: 21px;
+      }
+
+      .log-line:hover { background: rgba(110, 231, 255, 0.04); }
+
+      .log-line.highlight {
+        background: var(--highlight-bg);
+      }
+
+      .log-line.hidden { display: none; }
+
+      .line-number {
+        color: var(--muted);
+        opacity: 0.3;
+        user-select: none;
+        min-width: 48px;
+        text-align: right;
+        padding-right: 16px;
+        flex-shrink: 0;
+      }
+
+      .line-text { white-space: pre-wrap; word-break: break-all; }
+
+      /* Empty state */
+      .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: var(--muted);
+        gap: 8px;
+      }
+
+      .empty-state .icon { font-size: 40px; opacity: 0.3; }
+      .empty-state p { font-size: 14px; }
+
+      /* Loading spinner */
+      .spinner {
+        display: inline-block;
+        width: 16px; height: 16px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.6s linear infinite;
+      }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* Responsive */
+      @media (max-width: 720px) {
+        .sidebar { width: 220px; min-width: 180px; }
+        .header input[type="text"] { width: 160px; }
+      }
+
+      @media (max-width: 540px) {
+        .layout { flex-direction: column; }
+        .sidebar { width: 100%; height: 200px; min-width: unset; border-right: none; border-bottom: 1px solid var(--border); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>📋 Log Viewer</h1>
+      <span class="badge">gstitch-mcproxy</span>
+      <span class="spacer"></span>
+      <input type="text" id="searchBox" placeholder="Filter lines…" autocomplete="off" spellcheck="false">
+      <button id="refreshBtn" title="Refresh log list">↻ Refresh</button>
+    </div>
+
+    <div class="layout">
+      <div class="sidebar">
+        <div class="sidebar-tabs">
+          <div class="sidebar-tab active" data-tab="summary">Summary</div>
+          <div class="sidebar-tab" data-tab="projects">Projects</div>
+        </div>
+        <div class="sidebar-content" id="sidebarContent">
+          <div class="empty-state"><span class="spinner"></span><p>Loading…</p></div>
+        </div>
+      </div>
+
+      <div class="main">
+        <div class="main-toolbar">
+          <span class="status-dot" id="statusDot"></span>
+          <span class="file-name" id="fileName">No file selected</span>
+          <span class="file-size" id="fileSize"></span>
+          <span class="spacer"></span>
+          <span id="lineCount" style="font-size:11px;color:var(--muted);opacity:0.5;"></span>
+        </div>
+        <div class="terminal" id="terminal">
+          <div class="empty-state">
+            <span class="icon">📂</span>
+            <p>Select a log file from the sidebar</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // State
+      let logData = null;
+      let currentContent = [];
+      let currentFilter = "";
+
+      // DOM refs
+      const searchBox = document.getElementById("searchBox");
+      const refreshBtn = document.getElementById("refreshBtn");
+      const sidebarContent = document.getElementById("sidebarContent");
+      const terminal = document.getElementById("terminal");
+      const fileNameEl = document.getElementById("fileName");
+      const fileSizeEl = document.getElementById("fileSize");
+      const lineCountEl = document.getElementById("lineCount");
+      const statusDot = document.getElementById("statusDot");
+
+      // Tabs
+      document.querySelectorAll(".sidebar-tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          document.querySelectorAll(".sidebar-tab").forEach((t) => t.classList.remove("active"));
+          tab.classList.add("active");
+          if (tab.dataset.tab === "summary") renderSummaryTab();
+          else renderProjectsTab();
+        });
+      });
+
+      // Search
+      searchBox.addEventListener("input", () => {
+        currentFilter = searchBox.value.trim().toLowerCase();
+        applyFilter();
+      });
+
+      // Refresh
+      refreshBtn.addEventListener("click", loadLogData);
+
+      function setStatus(state) {
+        statusDot.className = "status-dot " + state;
+      }
+
+      function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / 1048576).toFixed(1) + " MB";
+      }
+
+      function escapeHtml(text) {
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+
+      async function loadLogData() {
+        setStatus("loading");
+        try {
+          const resp = await fetch("/api/logs");
+          logData = await resp.json();
+          const activeTab = document.querySelector(".sidebar-tab.active").dataset.tab;
+          if (activeTab === "summary") renderSummaryTab();
+          else renderProjectsTab();
+          setStatus("ready");
+        } catch (err) {
+          sidebarContent.innerHTML = '<div class="empty-state"><p style="color:var(--error-color)">Failed to load logs</p></div>';
+          setStatus("error");
+        }
+      }
+
+      function renderSummaryTab() {
+        if (!logData) return;
+        const summary = logData.summaryLog;
+        sidebarContent.innerHTML = "";
+
+        const entry = document.createElement("div");
+        entry.className = "summary-entry";
+        entry.innerHTML = '<span class="icon">📄</span> <span>' + escapeHtml(summary.name) + '</span>';
+        if (summary.exists) {
+          entry.innerHTML += '<span style="margin-left:auto;font-size:11px;opacity:0.45">' + formatBytes(summary.size) + '</span>';
+          entry.addEventListener("click", () => loadSummaryLog(entry));
+        } else {
+          entry.style.opacity = "0.3";
+          entry.style.cursor = "default";
+        }
+        sidebarContent.appendChild(entry);
+      }
+
+      function renderProjectsTab() {
+        if (!logData) return;
+        sidebarContent.innerHTML = "";
+
+        if (!logData.projects || logData.projects.length === 0) {
+          sidebarContent.innerHTML = '<div class="empty-state"><span class="icon">📁</span><p>No project logs found</p></div>';
+          return;
+        }
+
+        logData.projects.forEach((project) => {
+          const item = document.createElement("div");
+          item.className = "project-item";
+
+          const header = document.createElement("div");
+          header.className = "project-header";
+          header.innerHTML = '<span class="chevron">▶</span> <span>' + escapeHtml(project.projectId) + '</span> <span class="count">' + project.fileCount + '</span>';
+
+          const filesDiv = document.createElement("div");
+          filesDiv.className = "project-files";
+
+          header.addEventListener("click", () => {
+            header.classList.toggle("expanded");
+            filesDiv.classList.toggle("open");
+          });
+
+          project.files.forEach((file) => {
+            const fileEl = document.createElement("div");
+            fileEl.className = "file-item";
+            fileEl.innerHTML = escapeHtml(file.name) + '<span class="meta">' + formatBytes(file.size) + '</span>';
+            fileEl.addEventListener("click", () => loadLogFile(project.projectId, file.name, file.size, fileEl));
+            filesDiv.appendChild(fileEl);
+          });
+
+          item.appendChild(header);
+          item.appendChild(filesDiv);
+          sidebarContent.appendChild(item);
+        });
+      }
+
+      async function loadSummaryLog(entryEl) {
+        document.querySelectorAll(".summary-entry, .file-item").forEach((e) => e.classList.remove("active"));
+        if (entryEl) entryEl.classList.add("active");
+
+        fileNameEl.textContent = logData.summaryLog.name;
+        fileSizeEl.textContent = "";
+        setStatus("loading");
+
+        try {
+          const resp = await fetch("/api/logs/summary?limit=5000");
+          const data = await resp.json();
+          currentContent = data.lines;
+          renderTerminal(data.lines, logData.summaryLog.name);
+          setStatus("ready");
+        } catch (err) {
+          terminal.innerHTML = '<div class="empty-state"><p style="color:var(--error-color)">Failed to load summary log</p></div>';
+          setStatus("error");
+        }
+      }
+
+      async function loadLogFile(projectId, filename, fileSize, fileEl) {
+        document.querySelectorAll(".summary-entry, .file-item").forEach((e) => e.classList.remove("active"));
+        if (fileEl) fileEl.classList.add("active");
+
+        fileNameEl.textContent = projectId + "/" + filename;
+        fileSizeEl.textContent = formatBytes(fileSize);
+        setStatus("loading");
+
+        try {
+          const resp = await fetch("/api/logs/" + encodeURIComponent(projectId) + "/" + encodeURIComponent(filename));
+          if (!resp.ok) throw new Error(resp.status + " " + resp.statusText);
+          const text = await resp.text();
+          const lines = text.split("\\n");
+          currentContent = lines.map((text, i) => ({ number: i + 1, text }));
+          renderTerminal(currentContent, filename);
+          setStatus("ready");
+        } catch (err) {
+          terminal.innerHTML = '<div class="empty-state"><p style="color:var(--error-color)">Failed to load file: ' + escapeHtml(err.message) + '</p></div>';
+          setStatus("error");
+        }
+      }
+
+      function renderTerminal(lines, title) {
+        if (!lines || lines.length === 0) {
+          terminal.innerHTML = '<div class="empty-state"><span class="icon">📄</span><p>Empty log file</p></div>';
+          lineCountEl.textContent = "";
+          return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        lines.forEach((line) => {
+          const div = document.createElement("div");
+          div.className = "log-line";
+          div.dataset.text = (line.text || "").toLowerCase();
+
+          const numSpan = document.createElement("span");
+          numSpan.className = "line-number";
+          numSpan.textContent = line.number;
+
+          const textSpan = document.createElement("span");
+          textSpan.className = "line-text";
+          textSpan.textContent = line.text || "";
+
+          div.appendChild(numSpan);
+          div.appendChild(textSpan);
+          fragment.appendChild(div);
+        });
+
+        terminal.innerHTML = "";
+        terminal.appendChild(fragment);
+        lineCountEl.textContent = lines.length + " lines";
+        applyFilter();
+      }
+
+      function applyFilter() {
+        const lines = terminal.querySelectorAll(".log-line");
+        if (!currentFilter) {
+          lines.forEach((line) => {
+            line.classList.remove("hidden", "highlight");
+          });
+          return;
+        }
+
+        lines.forEach((line) => {
+          const text = line.dataset.text || "";
+          if (text.includes(currentFilter)) {
+            line.classList.remove("hidden");
+            line.classList.add("highlight");
+          } else {
+            line.classList.add("hidden");
+            line.classList.remove("highlight");
+          }
+        });
+      }
+
+      // Init
+      loadLogData();
+    </script>
+  </body>
+</html>`;
+}
+
 function parseAuthHeader(authHeader) {
   if (!authHeader || typeof authHeader !== "string") {
     return { apiKey: null, projectId: null };
@@ -832,6 +1626,11 @@ const server = http.createServer(async (req, res) => {
         slowRequestMs: LOG_SLOW_REQUEST_MS,
         verySlowRequestMs: LOG_VERY_SLOW_REQUEST_MS,
       },
+      logViewer: {
+        enabled: LOG_VIEWER_ENABLED,
+        maxFileBytes: LOG_VIEWER_MAX_FILE_BYTES,
+        summaryMaxLines: LOG_SUMMARY_MAX_LINES,
+      },
       timestamp: new Date().toISOString(),
     });
   }
@@ -859,6 +1658,57 @@ const server = http.createServer(async (req, res) => {
         details: error.message,
       });
     }
+  }
+
+  // --- Log Viewer Endpoints ---
+
+  if (!LOG_VIEWER_ENABLED && url.pathname.startsWith("/logs")) {
+    return sendJson(res, 404, { error: "Log viewer is disabled" });
+  }
+
+  if (req.method === "GET" && url.pathname === "/logs") {
+    return sendHtml(res, 200, renderLogsHtml());
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/logs") {
+    const summaryLogPath = path.join(LOG_DIR, LOG_FILE_NAME);
+    const summaryExists = fs.existsSync(summaryLogPath);
+    const summarySize = summaryExists ? fs.statSync(summaryLogPath).size : 0;
+
+    return sendJson(res, 200, {
+      logDir: LOG_DIR,
+      summaryLog: {
+        name: LOG_FILE_NAME,
+        exists: summaryExists,
+        size: summarySize,
+      },
+      projects: scanLogDirectory(),
+    });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/logs/summary") {
+    const limit = Number.parseInt(url.searchParams.get("limit") || String(LOG_SUMMARY_MAX_LINES), 10);
+    const offset = Number.parseInt(url.searchParams.get("offset") || "0", 10);
+
+    return sendJson(res, 200, readSummaryLogLines(limit, offset));
+  }
+
+  // Match /api/logs/<projectId>/<filename>
+  const logFileMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/(.+)$/);
+  if (req.method === "GET" && logFileMatch) {
+    const [, projectId, filename] = logFileMatch;
+    // Decode URI components (filenames have encoded dots from timestamps)
+    const decodedFilename = decodeURIComponent(filename);
+    const result = readLogFile(projectId, decodedFilename);
+
+    if (result.error) {
+      return sendJson(res, result.status, { error: result.error });
+    }
+
+    return sendText(res, 200, result.content, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "X-File-Size": String(result.size),
+    });
   }
 
   if (url.pathname === "/mcp") {
@@ -1019,4 +1869,9 @@ server.listen(MCP_SERVER_PORT, () => {
     );
   }
   console.log(`💓 Health endpoint: http://localhost:${MCP_SERVER_PORT}/health`);
+  if (LOG_VIEWER_ENABLED) {
+    console.log(`📋 Log viewer enabled: http://localhost:${MCP_SERVER_PORT}/logs`);
+  } else {
+    console.log("📋 Log viewer disabled");
+  }
 });
