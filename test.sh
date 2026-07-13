@@ -15,11 +15,15 @@ MCP_SERVER_URL="http://${MCP_SERVER_HOST}:${MCP_SERVER_PORT}"
 STITCH_PROJECT_ID=${STITCH_PROJECT_ID:-}
 STITCH_API_KEY=${STITCH_API_KEY:-}
 
-echo "Testing MCP server at ${MCP_SERVER_URL} with API key ${STITCH_API_KEY} and project ID ${STITCH_PROJECT_ID}"
+echo "Testing MCP server at ${MCP_SERVER_URL} with API key ${STITCH_API_KEY} and project ID ${STITCH_PROJECT_ID:-<none>}"
 
-if [ -z "${STITCH_API_KEY}" ] || [ -z "${STITCH_PROJECT_ID}" ]; then
-  echo "Missing STITCH_API_KEY or STITCH_PROJECT_ID in environment/.env"
+if [ -z "${STITCH_API_KEY}" ]; then
+  echo "Missing STITCH_API_KEY in environment/.env"
   exit 1
+fi
+
+if [ -z "${STITCH_PROJECT_ID}" ]; then
+  echo "ℹ️  STITCH_PROJECT_ID is not set (optional — tools requiring a project will need it via arguments)"
 fi
 
 echo "1) Well-known check"
@@ -34,7 +38,6 @@ curl -sS -H 'Accept: application/json' "${MCP_SERVER_URL}/instructions" | jq '.t
 echo "4) MCP initialize"
 curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
-  -H "STITCH_PROJECT_ID: ${STITCH_PROJECT_ID}" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl-test","version":"1.0"}}}' | jq
@@ -42,18 +45,22 @@ curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
 echo "5) tools/list"
 curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
   -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
-  -H "STITCH_PROJECT_ID: ${STITCH_PROJECT_ID}" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | jq
 
 echo "6) list_screens"
-curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
-  -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
-  -H "STITCH_PROJECT_ID: ${STITCH_PROJECT_ID}" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_screens","arguments":{"projectId":"'"${STITCH_PROJECT_ID}"'"}}}' | jq
+# Note: projectId is passed via tool arguments, not headers
+if [ -n "${STITCH_PROJECT_ID}" ]; then
+  PROJECT_ARG='"projectId":"'"${STITCH_PROJECT_ID}"'"'
+  curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
+    -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_screens","arguments":{"projectId":"'"${STITCH_PROJECT_ID}"'"}}}' | jq
+else
+  echo "   (skipping list_screens — STITCH_PROJECT_ID is required as a tool argument)"
+fi
 
 echo "7) Log viewer HTML check"
 curl -sS "${MCP_SERVER_URL}/logs" | head -5

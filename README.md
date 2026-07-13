@@ -38,17 +38,24 @@ HTTP proxy for Google Stitch MCP with:
 
 ## Credential Contract
 
-This proxy accepts Stitch credentials from request headers:
+This proxy accepts the API key from request headers:
 
 ```http
 STITCH_API_KEY: <your-api-key>
-STITCH_PROJECT_ID: <your-project-id>
 ```
 
-It also supports environment fallback:
+The project ID is **not** read from headers. It can be configured in two ways:
+
+1. **Environment default** (optional) — set `STITCH_PROJECT_ID` in `.env` to be used as a fallback for every request.
+2. **Per-tool arguments** — pass it as `arguments: { projectId: "..." }` in the tool call body. Agents should tell the assistant the project ID in chat, and the assistant will thread it into the relevant tool calls.
+
+The Stitch API itself will surface a clear error if a project ID is required and none is supplied. Any `STITCH_PROJECT_ID` (or `X-Stitch-Project-Id`) request headers sent by older clients are silently ignored for backward compatibility.
+
+Environment fallback example:
 
 ```dotenv
 STITCH_API_KEY=your-api-key
+# Optional — provides a default projectId when tools don't supply one
 STITCH_PROJECT_ID=your-project-id
 ```
 
@@ -64,13 +71,14 @@ STITCH_PROJECT_ID=your-project-id
 				"type": "none"
 			},
 			"headers": {
-				"STITCH_API_KEY": "${input:stitch_api_key}",
-				"STITCH_PROJECT_ID": "${input:stitch_project_id}"
+				"STITCH_API_KEY": "${input:stitch_api_key}"
 			}
 		}
 	}
 }
 ```
+
+> **Note:** `STITCH_PROJECT_ID` is intentionally **not** in the headers. Either set it in your server `.env`, or have the agent pass it through `arguments.projectId` on each tool call.
 
 ## Logging
 

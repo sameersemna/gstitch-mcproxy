@@ -93,3 +93,20 @@ Project
 * `generate_variants` is great for **A/B or refinement**
 
 ---
+
+# 🔑 Project ID — How to Provide It
+
+This proxy **does not** read the project ID from request headers. Whenever you call a tool that needs a project, pass it explicitly via the `arguments` object:
+
+```json
+{
+  "name": "list_screens",
+  "arguments": { "projectId": "<the-project-id>" }
+}
+```
+
+**As an assistant, when the user tells you the project ID in chat, thread it into every relevant tool call's `arguments.projectId`.** Do not assume the proxy will inject it from the environment — only do that if the user has set `STITCH_PROJECT_ID` in the server's `.env`.
+
+The API key (`STITCH_API_KEY`) is still passed via the MCP client headers — that part is handled outside this tool protocol.
+
+---

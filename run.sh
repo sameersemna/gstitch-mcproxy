@@ -43,10 +43,15 @@ fi
 
 echo "  node: ${NODE_BIN}"
 
-if [ -n "${STITCH_API_KEY:-}" ] || [ -n "${STITCH_PROJECT_ID:-}" ]; then
-  echo "  credentials: env-configured"
+if [ -n "${STITCH_API_KEY:-}" ]; then
+  echo "  api key: env-configured"
 else
-  echo "  credentials: header-based (expect STITCH_API_KEY/STITCH_PROJECT_ID per request)"
+  echo "  api key: header-based (expect STITCH_API_KEY per request)"
+fi
+if [ -n "${STITCH_PROJECT_ID:-}" ]; then
+  echo "  project id: env-configured (default)"
+else
+  echo "  project id: optional (provide via tool arguments or agent chat)"
 fi
 
 cd "${ROOT_DIR}"

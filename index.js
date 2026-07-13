@@ -1461,40 +1461,45 @@ function renderLogsHtml() {
 
 function parseAuthHeader(authHeader) {
   if (!authHeader || typeof authHeader !== "string") {
-    return { apiKey: null, projectId: null };
+    return { apiKey: null };
   }
 
   const match = authHeader.match(/^\s*basic\s+(.+)\s*$/i);
   if (!match) {
-    return { apiKey: null, projectId: null };
+    return { apiKey: null };
   }
 
   try {
     const decoded = Buffer.from(match[1], "base64").toString("utf8");
-    const separatorIndex = decoded.indexOf(":");
+    // Accept formats: "apiKey" or "projectId:apiKey" (backward compat - projectId silently ignored)
+    const separatorIndex = decoded.lastIndexOf(":");
     if (separatorIndex === -1) {
-      return { apiKey: null, projectId: null };
+      // No colon - treat entire string as apiKey
+      return { apiKey: decoded || null };
     }
 
-    const projectId = decoded.slice(0, separatorIndex);
     const apiKey = decoded.slice(separatorIndex + 1);
 
     return {
       apiKey: apiKey || null,
-      projectId: projectId || null,
     };
   } catch {
-    return { apiKey: null, projectId: null };
+    return { apiKey: null };
   }
 }
 
-if (!STITCH_API_KEY && !DEFAULT_STITCH_PROJECT_ID) {
+if (!STITCH_API_KEY) {
   console.log(
-    "ℹ️ No credentials in .env. Will accept them from request headers:",
+    "ℹ️ No STITCH_API_KEY in .env. Will accept it from request headers:",
   );
-  console.log("   - STITCH_API_KEY: your API key");
-  console.log("   - STITCH_PROJECT_ID: your project id");
+  console.log("   - Set STITCH_API_KEY in mcp.json headers or .env");
   console.log("   - gcloud fallback is OFF by default (set ENABLE_GCLOUD_FALLBACK=1)");
+}
+
+if (!DEFAULT_STITCH_PROJECT_ID) {
+  console.log(
+    "ℹ️ No STITCH_PROJECT_ID in .env (optional — agents can provide project ID via chat)",
+  );
 }
 
 function getAccessToken() {
@@ -1608,8 +1613,12 @@ const server = http.createServer(async (req, res) => {
       },
       credentials: {
         envApiKeyConfigured: Boolean(STITCH_API_KEY),
-        envProjectConfigured: Boolean(DEFAULT_STITCH_PROJECT_ID),
+        envProjectIdOptional: true,
+        envProjectIdConfigured: Boolean(DEFAULT_STITCH_PROJECT_ID),
         gcloudFallbackEnabled: process.env.ENABLE_GCLOUD_FALLBACK === "1",
+        projectConfigHint: DEFAULT_STITCH_PROJECT_ID
+          ? undefined
+          : "Can be provided via .env (STITCH_PROJECT_ID) or agent chat communication",
       },
       logging: {
         enabled: LOG_ENABLED,
@@ -1722,22 +1731,18 @@ const server = http.createServer(async (req, res) => {
       if (req.headers["stitch_api_key"]) {
         apiKey = req.headers["stitch_api_key"];
       }
-      if (req.headers["stitch_project_id"]) {
-        projectId = req.headers["stitch_project_id"];
-      }
 
       if (req.headers["x-stitch-api-key"]) {
         apiKey = req.headers["x-stitch-api-key"];
       }
-      if (req.headers["x-stitch-project-id"]) {
-        projectId = req.headers["x-stitch-project-id"];
-      }
+
+      // projectId is no longer accepted from headers for security — only from .env or tool arguments
+      // Headers: STITCH_PROJECT_ID, X-Stitch-Project-Id are silently ignored (backward compat)
 
       if (req.headers.authorization) {
-        const { apiKey: headerApiKey, projectId: headerProjectId } =
+        const { apiKey: headerApiKey } =
           parseAuthHeader(req.headers.authorization);
         apiKey = headerApiKey || apiKey;
-        projectId = headerProjectId || projectId;
       }
 
       // For security, do not allow API key in query params or body, only header or env var
@@ -1758,12 +1763,9 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
+      // projectId is optional — can be provided via .env, tool arguments, or agent chat
       if (!projectId) {
-        return sendText(
-          res,
-          401,
-          "❌ Missing project ID. Configure mcp.json headers.STITCH_PROJECT_ID or set STITCH_PROJECT_ID",
-        );
+        console.warn("⚠️ No project ID configured. Tools that require a project may fail.");
       }
 
       let token = null;
@@ -1820,7 +1822,7 @@ const server = http.createServer(async (req, res) => {
         timestamp: new Date().toISOString(),
         req,
         url,
-        projectId: req.headers["stitch_project_id"] || req.headers["x-stitch-project-id"] || DEFAULT_STITCH_PROJECT_ID,
+        projectId: DEFAULT_STITCH_PROJECT_ID,
         requestBody: undefined,
         requestContentType: req.headers["content-type"],
         durationMs,
@@ -1838,9 +1840,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(MCP_SERVER_PORT, () => {
-  const hasEnvConfig = STITCH_API_KEY && DEFAULT_STITCH_PROJECT_ID;
+  const hasApiKey = Boolean(STITCH_API_KEY);
+  const hasProjectId = Boolean(DEFAULT_STITCH_PROJECT_ID);
   console.log(
-    `🚀 Stitch MCP Proxy (${hasEnvConfig ? "env-configured" : "header-based"}) running at:`,
+    `🚀 Stitch MCP Proxy (apiKey=${hasApiKey ? "env" : "header"}, projectId=${hasProjectId ? "env" : "optional"}) running at:`,
   );
   console.log(`👉 http://localhost:${MCP_SERVER_PORT}/mcp`);
   if (LOG_ENABLED) {
@@ -1861,12 +1864,17 @@ server.listen(MCP_SERVER_PORT, () => {
   } else {
     console.log("🪵 Logging disabled");
   }
-  if (hasEnvConfig) {
-    console.log(`   Using project: ${DEFAULT_STITCH_PROJECT_ID}`);
+  if (hasApiKey && hasProjectId) {
+    console.log(`   Using apiKey: configured, project: ${DEFAULT_STITCH_PROJECT_ID}`);
   } else {
     console.log(
-      "   Waiting for STITCH_API_KEY/STITCH_PROJECT_ID headers",
+      "   STITCH_API_KEY: expect from request headers or .env",
     );
+    if (!hasProjectId) {
+      console.log(
+        "   STITCH_PROJECT_ID: optional — can be set in .env or provided by agents via chat",
+      );
+    }
   }
   console.log(`💓 Health endpoint: http://localhost:${MCP_SERVER_PORT}/health`);
   if (LOG_VIEWER_ENABLED) {
