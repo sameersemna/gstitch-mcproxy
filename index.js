@@ -65,6 +65,26 @@ const LOG_SKIP_MCP_METHODS = new Set(
     .filter(Boolean),
 );
 
+// --- Request safety & resilience ---
+const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.REQUEST_TIMEOUT_MS || "120000", 10);
+const MAX_BODY_SIZE_BYTES = Number.parseInt(process.env.MAX_BODY_SIZE_BYTES || "10485760", 10);
+
+// --- Rate limiting ---
+const RATE_LIMIT_ENABLED =
+  String(process.env.RATE_LIMIT_ENABLED || "false").toLowerCase() === "true";
+const RATE_LIMIT_MAX_RPS = Number.parseInt(process.env.RATE_LIMIT_MAX_RPS || "10", 10);
+const RATE_LIMIT_BURST = Number.parseInt(process.env.RATE_LIMIT_BURST || "20", 10);
+
+// --- CORS ---
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+
+// --- Metrics ---
+const METRICS_ENABLED =
+  String(process.env.METRICS_ENABLED || "true").toLowerCase() === "true";
+
+// --- Graceful shutdown ---
+const SHUTDOWN_DRAIN_MS = Number.parseInt(process.env.SHUTDOWN_DRAIN_MS || "15000", 10);
+
 // Log viewer configuration
 const LOG_VIEWER_ENABLED =
   String(process.env.LOG_VIEWER_ENABLED || "true").toLowerCase() === "true";
@@ -434,6 +454,164 @@ function classifyDuration(durationMs) {
 
 function generateRequestLogId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// --- Rate Limiter (Token Bucket) ---
+
+const rateLimitBuckets = new Map();
+
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (forwarded) {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.socket.remoteAddress || "unknown";
+}
+
+function checkRateLimit(clientIp) {
+  if (!RATE_LIMIT_ENABLED) {
+    return { allowed: true };
+  }
+
+  const now = Date.now();
+  let bucket = rateLimitBuckets.get(clientIp);
+
+  if (!bucket) {
+    bucket = { tokens: RATE_LIMIT_BURST, lastRefill: now };
+    rateLimitBuckets.set(clientIp, bucket);
+  }
+
+  // Refill tokens
+  const elapsed = (now - bucket.lastRefill) / 1000;
+  bucket.tokens = Math.min(RATE_LIMIT_BURST, bucket.tokens + elapsed * RATE_LIMIT_MAX_RPS);
+  bucket.lastRefill = now;
+
+  if (bucket.tokens >= 1) {
+    bucket.tokens -= 1;
+    return { allowed: true };
+  }
+
+  return { allowed: false, retryAfter: Math.ceil(1 / RATE_LIMIT_MAX_RPS) };
+}
+
+// Clean up stale rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, bucket] of rateLimitBuckets) {
+    if (now - bucket.lastRefill > 300000) {
+      rateLimitBuckets.delete(ip);
+    }
+  }
+}, 300000).unref();
+
+// --- Metrics Collector ---
+
+const metrics = {
+  requestsTotal: 0,
+  requestsByMethod: {},
+  requestsByStatus: {},
+  latencyBuckets: { 100: 0, 500: 0, 1000: 0, 5000: 0, 30000: 0, 120000: 0, Infinity: 0 },
+  errorsTotal: 0,
+  activeConnections: 0,
+  rateLimitedTotal: 0,
+  startTime: Date.now(),
+};
+
+function recordMetrics({ method, path, status, durationMs, isError }) {
+  metrics.requestsTotal += 1;
+
+  const methodKey = `${method} ${path}`;
+  metrics.requestsByMethod[methodKey] = (metrics.requestsByMethod[methodKey] || 0) + 1;
+
+  const statusKey = String(status);
+  metrics.requestsByStatus[statusKey] = (metrics.requestsByStatus[statusKey] || 0) + 1;
+
+  for (const [boundary, count] of Object.entries(metrics.latencyBuckets)) {
+    if (durationMs <= Number(boundary)) {
+      metrics.latencyBuckets[boundary] += 1;
+      break;
+    }
+  }
+
+  if (isError) {
+    metrics.errorsTotal += 1;
+  }
+}
+
+function renderPrometheusMetrics() {
+  const uptime = (Date.now() - metrics.startTime) / 1000;
+  const lines = [
+    "# HELP gstitch_proxy_uptime_seconds Proxy uptime in seconds",
+    "# TYPE gstitch_proxy_uptime_seconds gauge",
+    `gstitch_proxy_uptime_seconds ${uptime}`,
+    "",
+    "# HELP gstitch_proxy_requests_total Total number of requests",
+    "# TYPE gstitch_proxy_requests_total counter",
+    `gstitch_proxy_requests_total ${metrics.requestsTotal}`,
+    "",
+    "# HELP gstitch_proxy_errors_total Total number of errors",
+    "# TYPE gstitch_proxy_errors_total counter",
+    `gstitch_proxy_errors_total ${metrics.errorsTotal}`,
+    "",
+    "# HELP gstitch_proxy_active_connections Current active connections",
+    "# TYPE gstitch_proxy_active_connections gauge",
+    `gstitch_proxy_active_connections ${metrics.activeConnections}`,
+    "",
+    "# HELP gstitch_proxy_rate_limited_total Total rate-limited requests",
+    "# TYPE gstitch_proxy_rate_limited_total counter",
+    `gstitch_proxy_rate_limited_total ${metrics.rateLimitedTotal}`,
+    "",
+    "# HELP gstitch_proxy_requests_by_method Requests by HTTP method and path",
+    "# TYPE gstitch_proxy_requests_by_method counter",
+  ];
+
+  for (const [key, value] of Object.entries(metrics.requestsByMethod)) {
+    lines.push(`gstitch_proxy_requests_by_method{method_path="${key}"} ${value}`);
+  }
+
+  lines.push(
+    "",
+    "# HELP gstitch_proxy_requests_by_status Requests by HTTP status code",
+    "# TYPE gstitch_proxy_requests_by_status counter",
+  );
+
+  for (const [key, value] of Object.entries(metrics.requestsByStatus)) {
+    lines.push(`gstitch_proxy_requests_by_status{status="${key}"} ${value}`);
+  }
+
+  lines.push(
+    "",
+    "# HELP gstitch_proxy_latency_seconds Request latency histogram",
+    "# TYPE gstitch_proxy_latency_seconds histogram",
+  );
+
+  let cumulative = 0;
+  for (const [boundary, count] of Object.entries(metrics.latencyBuckets)) {
+    cumulative += count;
+    const le = boundary === "Infinity" ? "+Inf" : (Number(boundary) / 1000).toFixed(3);
+    lines.push(`gstitch_proxy_latency_seconds_bucket{le="${le}"} ${cumulative}`);
+  }
+
+  lines.push(
+    `gstitch_proxy_latency_seconds_count ${metrics.requestsTotal}`,
+    `gstitch_proxy_latency_seconds_sum ${metrics.requestsTotal > 0 ? "0" : "0"}`,
+    "",
+  );
+
+  return lines.join("\n") + "\n";
+}
+
+// --- Connection Tracker (for graceful shutdown) ---
+
+const activeConnections = new Set();
+
+function trackConnection(socket) {
+  activeConnections.add(socket);
+  metrics.activeConnections = activeConnections.size;
+  socket.on("close", () => {
+    activeConnections.delete(socket);
+    metrics.activeConnections = activeConnections.size;
+  });
 }
 
 function redactHeaders(headers) {
@@ -1569,8 +1747,64 @@ async function readRequestBody(req) {
   return chunks.length ? Buffer.concat(chunks).toString("utf8") : undefined;
 }
 
+// --- CORS Helper ---
+
+function setCorsHeaders(res, req) {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", CORS_ORIGIN === "*" ? "*" : origin);
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, STITCH_API_KEY, X-Stitch-Api-Key, Accept");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
+
+// --- Origin Validation (MCP Spec 2026-07-28) ---
+
+function validateOrigin(req) {
+  // Only validate for /mcp endpoint per MCP spec
+  if (!req.url.startsWith("/mcp")) {
+    return true;
+  }
+
+  const origin = req.headers.origin;
+  if (!origin) {
+    return true; // No origin header is acceptable for non-browser clients
+  }
+
+  // For localhost, allow any localhost origin
+  if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+    return true;
+  }
+
+  // If CORS_ORIGIN is set to a specific value, validate against it
+  if (CORS_ORIGIN !== "*") {
+    return origin === CORS_ORIGIN;
+  }
+
+  return true;
+}
+
 const server = http.createServer(async (req, res) => {
+  // Track connection for graceful shutdown
+  trackConnection(req.socket);
+
+  // Set CORS headers on all responses
+  setCorsHeaders(res, req);
+
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // --- Metrics endpoint ---
+  if (METRICS_ENABLED && req.method === "GET" && url.pathname === "/metrics") {
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end(renderPrometheusMetrics());
+    return;
+  }
 
   if (
     req.method === "GET" &&
@@ -1639,6 +1873,22 @@ const server = http.createServer(async (req, res) => {
         enabled: LOG_VIEWER_ENABLED,
         maxFileBytes: LOG_VIEWER_MAX_FILE_BYTES,
         summaryMaxLines: LOG_SUMMARY_MAX_LINES,
+      },
+      resilience: {
+        requestTimeoutMs: REQUEST_TIMEOUT_MS,
+        maxBodySizeBytes: MAX_BODY_SIZE_BYTES,
+        rateLimitEnabled: RATE_LIMIT_ENABLED,
+        rateLimitMaxRps: RATE_LIMIT_MAX_RPS,
+        rateLimitBurst: RATE_LIMIT_BURST,
+        corsOrigin: CORS_ORIGIN,
+      },
+      metrics: {
+        enabled: METRICS_ENABLED,
+        requestsTotal: metrics.requestsTotal,
+        errorsTotal: metrics.errorsTotal,
+        activeConnections: metrics.activeConnections,
+        rateLimitedTotal: metrics.rateLimitedTotal,
+        uptimeSeconds: Math.floor((Date.now() - metrics.startTime) / 1000),
       },
       timestamp: new Date().toISOString(),
     });
@@ -1723,6 +1973,30 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/mcp") {
     const requestStartedAt = Date.now();
     const requestLogId = generateRequestLogId();
+
+    // --- Origin validation (MCP spec requirement) ---
+    if (!validateOrigin(req)) {
+      metrics.rateLimitedTotal += 1;
+      return sendJson(res, 403, {
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "Invalid Origin header" },
+        id: null,
+      });
+    }
+
+    // --- Rate limiting ---
+    const clientIp = getClientIp(req);
+    const rateLimitResult = checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      metrics.rateLimitedTotal += 1;
+      res.setHeader("Retry-After", String(rateLimitResult.retryAfter));
+      return sendJson(res, 429, {
+        jsonrpc: "2.0",
+        error: { code: -32002, message: "Rate limit exceeded. Please retry." },
+        id: null,
+      });
+    }
+
     try {
       // Accept credentials from request headers or fallback to env
       let apiKey = STITCH_API_KEY;
@@ -1735,9 +2009,6 @@ const server = http.createServer(async (req, res) => {
       if (req.headers["x-stitch-api-key"]) {
         apiKey = req.headers["x-stitch-api-key"];
       }
-
-      // projectId is no longer accepted from headers for security — only from .env or tool arguments
-      // Headers: STITCH_PROJECT_ID, X-Stitch-Project-Id are silently ignored (backward compat)
 
       if (req.headers.authorization) {
         const { apiKey: headerApiKey } =
@@ -1763,7 +2034,6 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
-      // projectId is optional — can be provided via .env, tool arguments, or agent chat
       if (!projectId) {
         console.warn("⚠️ No project ID configured. Tools that require a project may fail.");
       }
@@ -1772,51 +2042,172 @@ const server = http.createServer(async (req, res) => {
       if (!apiKey && gcloudFallbackEnabled && req.method !== "GET") {
         token = getCachedToken();
       }
+
       const timestamp = new Date().toISOString();
-      const body = await readRequestBody(req);
 
-      const response = await fetch(STITCH_URL, {
-        method: req.method,
-        headers: buildForwardHeaders(req, token, apiKey, projectId),
-        body,
-      });
+      // --- Read request body with size limit ---
+      const bodyChunks = [];
+      let bodySize = 0;
 
-      const text = await response.text();
-      const durationMs = Date.now() - requestStartedAt;
-      const durationClass = classifyDuration(durationMs);
-      const methodSummary = formatMethodsForSummary(body);
-      if (!(req.method === "GET" && url.pathname === "/mcp" && LOG_SKIP_MCP_GET)) {
-        appendSummaryLog(
-          `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
-            apiKey ? "configured" : "none"
-          } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass}\n`,
-        );
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        for await (const chunk of req) {
+          bodySize += chunk.length;
+          if (bodySize > MAX_BODY_SIZE_BYTES) {
+            res.writeHead(413, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              jsonrpc: "2.0",
+              error: { code: -32003, message: `Request body too large (max ${MAX_BODY_SIZE_BYTES} bytes)` },
+              id: null,
+            }));
+            return;
+          }
+          bodyChunks.push(chunk);
+        }
       }
-      writeDetailedDebugLog({
-        requestLogId,
-        timestamp,
-        req,
-        url,
-        projectId,
-        requestBody: body,
-        requestContentType: req.headers["content-type"],
-        durationMs,
-        durationClass,
-        responseStatus: response.status,
-        responseHeaders: Object.fromEntries(response.headers.entries()),
-        responseBody: text,
-      });
-      return sendText(res, response.status, text, {
-        "Content-Type": response.headers.get("content-type") ||
-          "application/json",
-      });
+
+      const body = bodyChunks.length
+        ? Buffer.concat(bodyChunks).toString("utf8")
+        : undefined;
+
+      // --- Forward request to Stitch with timeout ---
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+      let response;
+      try {
+        response = await fetch(STITCH_URL, {
+          method: req.method,
+          headers: buildForwardHeaders(req, token, apiKey, projectId),
+          body,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      const isStreamingResponse =
+        contentType.includes("text/event-stream") ||
+        contentType.includes("application/x-ndjson");
+
+      // --- Stream or buffer response ---
+      if (isStreamingResponse && response.body) {
+        // SSE/Streaming: pipe chunks as they arrive
+        res.writeHead(response.status, {
+          "Content-Type": contentType,
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        });
+
+        const streamChunks = [];
+        try {
+          for await (const chunk of response.body) {
+            res.write(chunk);
+            streamChunks.push(chunk);
+          }
+          res.end();
+        } catch (streamError) {
+          if (!res.writableEnded) {
+            res.end();
+          }
+          throw streamError;
+        }
+
+        const durationMs = Date.now() - requestStartedAt;
+        const durationClass = classifyDuration(durationMs);
+        const methodSummary = formatMethodsForSummary(body);
+        const fullResponseBody = Buffer.concat(streamChunks).toString("utf8");
+
+        recordMetrics({
+          method: req.method,
+          path: url.pathname,
+          status: response.status,
+          durationMs,
+          isError: response.status >= 500,
+        });
+
+        if (!(req.method === "GET" && LOG_SKIP_MCP_GET)) {
+          appendSummaryLog(
+            `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
+              apiKey ? "configured" : "none"
+            } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - STREAM: true\n`,
+          );
+        }
+
+        writeDetailedDebugLog({
+          requestLogId,
+          timestamp,
+          req,
+          url,
+          projectId,
+          requestBody: body,
+          requestContentType: req.headers["content-type"],
+          durationMs,
+          durationClass,
+          responseStatus: response.status,
+          responseHeaders: Object.fromEntries(response.headers.entries()),
+          responseBody: fullResponseBody,
+        });
+      } else {
+        // Non-streaming: buffer and send
+        const text = await response.text();
+        const durationMs = Date.now() - requestStartedAt;
+        const durationClass = classifyDuration(durationMs);
+        const methodSummary = formatMethodsForSummary(body);
+
+        recordMetrics({
+          method: req.method,
+          path: url.pathname,
+          status: response.status,
+          durationMs,
+          isError: response.status >= 500,
+        });
+
+        if (!(req.method === "GET" && url.pathname === "/mcp" && LOG_SKIP_MCP_GET)) {
+          appendSummaryLog(
+            `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
+              apiKey ? "configured" : "none"
+            } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass}\n`,
+          );
+        }
+
+        writeDetailedDebugLog({
+          requestLogId,
+          timestamp,
+          req,
+          url,
+          projectId,
+          requestBody: body,
+          requestContentType: req.headers["content-type"],
+          durationMs,
+          durationClass,
+          responseStatus: response.status,
+          responseHeaders: Object.fromEntries(response.headers.entries()),
+          responseBody: text,
+        });
+
+        return sendText(res, response.status, text, {
+          "Content-Type": contentType || "application/json",
+        });
+      }
     } catch (error) {
       console.error("❌ Proxy error:", error);
       const durationMs = Date.now() - requestStartedAt;
       const durationClass = classifyDuration(durationMs);
+      const isTimeout = error.name === "AbortError" || error.name === "TimeoutError";
+
+      recordMetrics({
+        method: req.method,
+        path: url.pathname,
+        status: isTimeout ? 504 : 500,
+        durationMs,
+        isError: true,
+      });
+
       appendSummaryLog(
-        `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 500 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: ${error.message || "Unknown proxy error"}\n`,
+        `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: ${isTimeout ? 504 : 500} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: ${error.message || "Unknown proxy error"}\n`,
       );
+
       writeDetailedDebugLog({
         requestLogId,
         timestamp: new Date().toISOString(),
@@ -1827,11 +2218,23 @@ const server = http.createServer(async (req, res) => {
         requestContentType: req.headers["content-type"],
         durationMs,
         durationClass,
-        responseStatus: 500,
+        responseStatus: isTimeout ? 504 : 500,
         responseHeaders: {},
         responseBody: "",
         error,
       });
+
+      if (isTimeout) {
+        return sendJson(res, 504, {
+          jsonrpc: "2.0",
+          error: {
+            code: -32004,
+            message: `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`,
+          },
+          id: null,
+        });
+      }
+
       return sendText(res, 500, error.message || "Unknown proxy error");
     }
   }
@@ -1882,4 +2285,52 @@ server.listen(MCP_SERVER_PORT, () => {
   } else {
     console.log("📋 Log viewer disabled");
   }
+  if (METRICS_ENABLED) {
+    console.log(`📊 Metrics enabled: http://localhost:${MCP_SERVER_PORT}/metrics`);
+  }
+  if (RATE_LIMIT_ENABLED) {
+    console.log(`🛡️  Rate limiting: ${RATE_LIMIT_MAX_RPS} req/s, burst ${RATE_LIMIT_BURST}`);
+  }
+  console.log(`⏱️  Request timeout: ${REQUEST_TIMEOUT_MS}ms`);
+  console.log(`📦 Max body size: ${MAX_BODY_SIZE_BYTES} bytes`);
 });
+
+// --- Graceful Shutdown ---
+
+let isShuttingDown = false;
+
+function gracefulShutdown(signal) {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+
+  console.log(`\n🛑 Received ${signal}. Shutting down gracefully...`);
+
+  // Stop accepting new connections
+  server.close(() => {
+    console.log("✅ Server closed. No longer accepting connections.");
+  });
+
+  // Give existing connections time to drain
+  const drainStart = Date.now();
+  const checkDrain = setInterval(() => {
+    const remaining = activeConnections.size;
+    const elapsed = Date.now() - drainStart;
+
+    if (remaining === 0) {
+      clearInterval(checkDrain);
+      console.log("✅ All connections drained. Exiting.");
+      process.exit(0);
+    }
+
+    if (elapsed >= SHUTDOWN_DRAIN_MS) {
+      clearInterval(checkDrain);
+      console.log(`⚠️  Drain timeout. ${remaining} connections still active. Forcing exit.`);
+      process.exit(1);
+    }
+  }, 500);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

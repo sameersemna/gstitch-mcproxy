@@ -2,16 +2,23 @@
 
 HTTP proxy for Google Stitch MCP with:
 - header-based credential passthrough
-- MCP forwarding to Stitch
+- MCP forwarding to Stitch with **SSE streaming support**
 - human/AI-readable instructions endpoint
-- health endpoint
+- health endpoint with live metrics
 - structured request logging with debug capture
 - browser-based log viewer dashboard
+- **Prometheus metrics endpoint**
+- **rate limiting, request timeouts, body size limits**
+- **graceful shutdown with connection draining**
+- **Docker support**
 
 ## Endpoints
 
 `GET /health`
-- Returns runtime status, logging config, and credential availability.
+- Returns runtime status, logging config, credential availability, resilience settings, and live metrics.
+
+`GET /metrics`
+- Returns Prometheus-format metrics: request counts, latency histogram, error rates, active connections, rate-limited count, uptime.
 
 `GET /instructions`
 - Returns formatted HTML by default.
@@ -19,7 +26,9 @@ HTTP proxy for Google Stitch MCP with:
 - Returns raw markdown with `Accept: text/markdown`.
 
 `POST /mcp`
-- Proxies MCP requests to Stitch.
+- Proxies MCP requests to Stitch with **SSE streaming** for long-running operations.
+- Validates `Origin` header per MCP Streamable HTTP spec (2026-07-28).
+- Enforces configurable rate limits, request timeouts, and body size limits.
 
 `GET /logs`
 - Opens an interactive log viewer dashboard in the browser.
@@ -126,6 +135,64 @@ Open `http://localhost:8787/logs` in a browser to access the log viewer dashboar
 | `LOG_SUMMARY_MAX_LINES` | `200` | Default page size for summary log API |
 
 **Security:** All file paths are validated against path traversal. Requests that attempt to escape the `logs/` directory receive a 403 response.
+
+## SSE Streaming
+
+The proxy detects `text/event-stream` responses from Stitch and **streams chunks in real-time** instead of buffering. This is critical for long-running operations like `generate_screen_from_text` and `edit_screens` which can take 60+ seconds. Without streaming, clients would see the request hang until completion.
+
+Streaming responses are logged in full after the stream completes, so debug logs remain complete.
+
+## Resilience & Safety
+
+| Variable | Default | Description |
+|---|---|---|
+| `REQUEST_TIMEOUT_MS` | `120000` (2 min) | Upstream request timeout. Returns 504 on timeout. |
+| `MAX_BODY_SIZE_BYTES` | `10485760` (10 MB) | Maximum request body size. Returns 413 on exceed. |
+| `RATE_LIMIT_ENABLED` | `false` | Enable token-bucket rate limiting. |
+| `RATE_LIMIT_MAX_RPS` | `10` | Requests per second per client IP. |
+| `RATE_LIMIT_BURST` | `20` | Maximum burst size for rate limiter. |
+| `CORS_ORIGIN` | `*` | CORS allowed origin. Set to specific origin for production. |
+| `SHUTDOWN_DRAIN_MS` | `15000` | Max time to drain connections on SIGTERM/SIGINT. |
+
+**Origin Validation:** Per the MCP Streamable HTTP spec (2026-07-28), the proxy validates the `Origin` header on `/mcp` requests. Invalid origins receive HTTP 403.
+
+## Metrics (Prometheus)
+
+`GET /metrics` returns Prometheus-format metrics:
+
+| Metric | Type | Description |
+|---|---|---|
+| `gstitch_proxy_uptime_seconds` | gauge | Proxy uptime |
+| `gstitch_proxy_requests_total` | counter | Total requests |
+| `gstitch_proxy_errors_total` | counter | Total errors (5xx) |
+| `gstitch_proxy_active_connections` | gauge | Current active connections |
+| `gstitch_proxy_rate_limited_total` | counter | Rate-limited requests |
+| `gstitch_proxy_requests_by_method` | counter | Requests by HTTP method + path |
+| `gstitch_proxy_requests_by_status` | counter | Requests by HTTP status code |
+| `gstitch_proxy_latency_seconds` | histogram | Request latency buckets (100ms, 500ms, 1s, 5s, 30s, 120s) |
+
+Disable with `METRICS_ENABLED=false`.
+
+## Docker
+
+```bash
+# Build and run
+docker compose up -d
+
+# Or build manually
+docker build -t gstitch-mcproxy .
+docker run -d -p 8787:8787 \
+  -e STITCH_API_KEY=your-key \
+  -e STITCH_PROJECT_ID=your-project \
+  -v $(pwd)/logs:/app/logs \
+  gstitch-mcproxy
+```
+
+The Docker image:
+- Runs as non-root user (`mcproxy`)
+- Includes healthcheck (`/health` endpoint)
+- Exposes port 8787
+- Uses `node:22-alpine` for minimal size
 
 ## Quick Test
 

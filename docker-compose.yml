@@ -1,0 +1,28 @@
+services:
+  gstitch-mcproxy:
+    build: .
+    container_name: gstitch-mcproxy
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      - STITCH_API_KEY=${STITCH_API_KEY}
+      - STITCH_PROJECT_ID=${STITCH_PROJECT_ID:-}
+      - MCP_SERVER_PORT=8787
+      - MCP_SERVER_HOST=0.0.0.0
+      - LOG_ENABLED=${LOG_ENABLED:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_DIR=logs
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - LOG_VIEWER_ENABLED=${LOG_VIEWER_ENABLED:-true}
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-false}
+      - REQUEST_TIMEOUT_MS=${REQUEST_TIMEOUT_MS:-120000}
+      - MAX_BODY_SIZE_BYTES=${MAX_BODY_SIZE_BYTES:-10485760}
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
