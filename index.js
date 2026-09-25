@@ -40,11 +40,14 @@ function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
 
 loadEnvFile();
 
-const STITCH_URL = "https://stitch.googleapis.com/mcp";
+const STITCH_URL = process.env.STITCH_URL || "https://stitch.googleapis.com/mcp";
 const INSTRUCTIONS_PATH = path.resolve(process.cwd(), "INSTRUCTIONS.md");
 let STITCH_API_KEY = process.env.STITCH_API_KEY;
 let DEFAULT_STITCH_PROJECT_ID = process.env.STITCH_PROJECT_ID;
 const MCP_SERVER_PORT = process.env.MCP_SERVER_PORT || 8787;
+// Bind address. Defaults to all interfaces so existing LAN setups keep working.
+// Set MCP_SERVER_HOST=127.0.0.1 to bind loopback only (recommended by the MCP spec).
+const MCP_SERVER_HOST = process.env.MCP_SERVER_HOST || "0.0.0.0";
 const LOG_ENABLED = String(process.env.LOG_ENABLED || "false").toLowerCase() === "true";
 const LOG_LEVEL = String(process.env.LOG_LEVEL || "info").toLowerCase();
 const LOG_DIR = path.resolve(process.cwd(), process.env.LOG_DIR || "logs");
@@ -68,6 +71,25 @@ const LOG_SKIP_MCP_METHODS = new Set(
 // --- Request safety & resilience ---
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.REQUEST_TIMEOUT_MS || "120000", 10);
 const MAX_BODY_SIZE_BYTES = Number.parseInt(process.env.MAX_BODY_SIZE_BYTES || "10485760", 10);
+
+// --- Upstream retry (transient network / HTTP2 stream resets) ---
+const UPSTREAM_RETRY_ENABLED =
+  String(process.env.UPSTREAM_RETRY_ENABLED || "true").toLowerCase() === "true";
+const UPSTREAM_RETRY_ATTEMPTS = Number.parseInt(process.env.UPSTREAM_RETRY_ATTEMPTS || "3", 10);
+const UPSTREAM_RETRY_BASE_DELAY_MS = Number.parseInt(
+  process.env.UPSTREAM_RETRY_BASE_DELAY_MS || "250",
+  10,
+);
+
+// --- Local fallbacks for methods Stitch does not implement ---
+// Stitch resets the HTTP/2 stream for `prompts/list`, which surfaces to clients as
+// "fetch failed" and makes some clients retry discovery in a tight loop.
+const LOCAL_FALLBACK_METHODS = new Set(
+  String(process.env.LOCAL_FALLBACK_METHODS || "prompts/list")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+);
 
 // --- Rate limiting ---
 const RATE_LIMIT_ENABLED =
@@ -456,6 +478,122 @@ function generateRequestLogId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// --- Upstream error classification & retry helpers ---
+
+// Node's fetch() collapses every transport failure into `TypeError: fetch failed`
+// and hides the real reason in `error.cause`. Surface it so logs are actionable.
+function describeFetchError(error) {
+  if (!error) {
+    return "Unknown error";
+  }
+
+  const cause = error.cause;
+  const causeCode = cause && (cause.code || cause.errno);
+  const causeMessage = cause && cause.message;
+
+  if (causeCode || causeMessage) {
+    return `${error.message || error.name} (${causeCode || causeMessage})`;
+  }
+
+  return error.message || error.name || String(error);
+}
+
+// Transient failures are worth retrying: HTTP/2 stream resets, socket hangups,
+// DNS blips and connection resets. Timeouts and 4xx/5xx responses are not.
+function isTransientUpstreamError(error) {
+  if (!error) {
+    return false;
+  }
+
+  if (error.name === "AbortError" || error.name === "TimeoutError") {
+    return false;
+  }
+
+  const cause = error.cause || {};
+  const code = cause.code || cause.errno || "";
+  const message = `${error.message || ""} ${cause.message || ""}`;
+
+  const transientCodes = [
+    "ERR_HTTP2_STREAM_ERROR",
+    "ERR_HTTP2_STREAM_CANCEL",
+    "ERR_HTTP2_GOAWAY_SESSION",
+    "ERR_HTTP2_SESSION_ERROR",
+    "ERR_HTTP2_INVALID_SESSION",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "EPIPE",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "ENETDOWN",
+    "UND_ERR_SOCKET",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT",
+  ];
+
+  if (transientCodes.includes(code)) {
+    return true;
+  }
+
+  return /socket hang up|other side closed|stream closed|connection reset|fetch failed/i.test(
+    message,
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// --- Local fallbacks for methods Stitch does not implement ---
+
+// Returns a JSON-RPC response object when the request can be answered locally,
+// or null when it must be forwarded upstream.
+function buildLocalFallbackResponse(requestBody) {
+  if (!requestBody || !LOCAL_FALLBACK_METHODS.size) {
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(requestBody);
+  } catch {
+    return null;
+  }
+
+  // Only handle single (non-batched) requests.
+  if (Array.isArray(parsed) || !parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  const { method, id } = parsed;
+  if (typeof method !== "string" || !LOCAL_FALLBACK_METHODS.has(method)) {
+    return null;
+  }
+
+  // Notifications (no id) are acknowledged with 202 and no body.
+  if (id === undefined || id === null) {
+    return { notification: true };
+  }
+
+  const emptyResults = {
+    "prompts/list": { prompts: [] },
+    "resources/list": { resources: [] },
+    "resources/templates/list": { resourceTemplates: [] },
+  };
+
+  const result = emptyResults[method];
+  if (!result) {
+    return null;
+  }
+
+  return {
+    jsonrpc: "2.0",
+    id,
+    result,
+  };
+}
+
 // --- Rate Limiter (Token Bucket) ---
 
 const rateLimitBuckets = new Map();
@@ -511,6 +649,7 @@ const metrics = {
   requestsByMethod: {},
   requestsByStatus: {},
   latencyBuckets: { 100: 0, 500: 0, 1000: 0, 5000: 0, 30000: 0, 120000: 0, Infinity: 0 },
+  latencySumSeconds: 0,
   errorsTotal: 0,
   activeConnections: 0,
   rateLimitedTotal: 0,
@@ -532,6 +671,8 @@ function recordMetrics({ method, path, status, durationMs, isError }) {
       break;
     }
   }
+
+  metrics.latencySumSeconds += durationMs / 1000;
 
   if (isError) {
     metrics.errorsTotal += 1;
@@ -594,7 +735,7 @@ function renderPrometheusMetrics() {
 
   lines.push(
     `gstitch_proxy_latency_seconds_count ${metrics.requestsTotal}`,
-    `gstitch_proxy_latency_seconds_sum ${metrics.requestsTotal > 0 ? "0" : "0"}`,
+    `gstitch_proxy_latency_seconds_sum ${metrics.latencySumSeconds.toFixed(3)}`,
     "",
   );
 
@@ -1881,6 +2022,10 @@ const server = http.createServer(async (req, res) => {
         rateLimitMaxRps: RATE_LIMIT_MAX_RPS,
         rateLimitBurst: RATE_LIMIT_BURST,
         corsOrigin: CORS_ORIGIN,
+        upstreamRetryEnabled: UPSTREAM_RETRY_ENABLED,
+        upstreamRetryAttempts: UPSTREAM_RETRY_ATTEMPTS,
+        upstreamRetryBaseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,
+        localFallbackMethods: Array.from(LOCAL_FALLBACK_METHODS),
       },
       metrics: {
         enabled: METRICS_ENABLED,
@@ -1973,6 +2118,55 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/mcp") {
     const requestStartedAt = Date.now();
     const requestLogId = generateRequestLogId();
+    // Declared here so the catch block can tell a client disconnect from a real failure.
+    let clientDisconnected = false;
+
+    // --- Method guard (MCP Streamable HTTP spec) ---
+    // Stitch only implements POST. Forwarding GET/DELETE/PUT upstream returns a
+    // Google HTML 405 error page, which is not a valid MCP response and makes
+    // clients log confusing parse errors. Answer these locally instead.
+    if (req.method !== "POST") {
+      const durationMs = Date.now() - requestStartedAt;
+
+      if (req.method === "GET") {
+        // Spec: a server that offers no SSE stream MUST return 405 Method Not Allowed.
+        recordMetrics({ method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+        appendSummaryLog(
+          `${new Date().toISOString()} - ID: ${requestLogId} - GET /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: no SSE stream offered\n`,
+        );
+        res.setHeader("Allow", "POST, OPTIONS");
+        return sendJson(res, 405, {
+          jsonrpc: "2.0",
+          error: { code: -32005, message: "Method Not Allowed: this endpoint does not offer an SSE stream" },
+          id: null,
+        });
+      }
+
+      if (req.method === "DELETE") {
+        // Spec: a server MAY return 405 to indicate it does not allow session termination.
+        recordMetrics({ method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+        appendSummaryLog(
+          `${new Date().toISOString()} - ID: ${requestLogId} - DELETE /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: stateless, no session to terminate\n`,
+        );
+        res.setHeader("Allow", "POST, OPTIONS");
+        return sendJson(res, 405, {
+          jsonrpc: "2.0",
+          error: { code: -32005, message: "Method Not Allowed: this server is stateless and has no session to terminate" },
+          id: null,
+        });
+      }
+
+      recordMetrics({ method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+      appendSummaryLog(
+        `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)}\n`,
+      );
+      res.setHeader("Allow", "POST, OPTIONS");
+      return sendJson(res, 405, {
+        jsonrpc: "2.0",
+        error: { code: -32005, message: `Method Not Allowed: ${req.method} is not supported on /mcp` },
+        id: null,
+      });
+    }
 
     // --- Origin validation (MCP spec requirement) ---
     if (!validateOrigin(req)) {
@@ -2027,11 +2221,15 @@ const server = http.createServer(async (req, res) => {
       const gcloudFallbackEnabled = process.env.ENABLE_GCLOUD_FALLBACK === "1";
 
       if (!apiKey && !gcloudFallbackEnabled) {
-        return sendText(
-          res,
-          401,
-          "❌ Missing API key. Configure mcp.json headers.STITCH_API_KEY or set STITCH_API_KEY",
-        );
+        return sendJson(res, 401, {
+          jsonrpc: "2.0",
+          error: {
+            code: -32007,
+            message:
+              "Missing API key. Configure mcp.json headers.STITCH_API_KEY or set STITCH_API_KEY",
+          },
+          id: null,
+        });
       }
 
       if (!projectId) {
@@ -2069,20 +2267,116 @@ const server = http.createServer(async (req, res) => {
         ? Buffer.concat(bodyChunks).toString("utf8")
         : undefined;
 
-      // --- Forward request to Stitch with timeout ---
+      // --- Local fallback for methods Stitch does not implement ---
+      // Avoids the upstream HTTP/2 stream reset that clients see as "fetch failed".
+      const localFallback = buildLocalFallbackResponse(body);
+      if (localFallback) {
+        const durationMs = Date.now() - requestStartedAt;
+        const durationClass = classifyDuration(durationMs);
+        const methodSummary = formatMethodsForSummary(body);
+
+        if (localFallback.notification) {
+          recordMetrics({ method: req.method, path: url.pathname, status: 202, durationMs, isError: false });
+          appendSummaryLog(
+            `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
+              apiKey ? "configured" : "none"
+            } - PROJECT_ID: ${projectId || "none"} - STATUS: 202 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - LOCAL_FALLBACK: true\n`,
+          );
+          res.writeHead(202);
+          return res.end();
+        }
+
+        const fallbackBody = JSON.stringify(localFallback);
+        recordMetrics({ method: req.method, path: url.pathname, status: 200, durationMs, isError: false });
+        appendSummaryLog(
+          `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
+            apiKey ? "configured" : "none"
+          } - PROJECT_ID: ${projectId || "none"} - STATUS: 200 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - LOCAL_FALLBACK: true\n`,
+        );
+        writeDetailedDebugLog({
+          requestLogId,
+          timestamp,
+          req,
+          url,
+          projectId,
+          requestBody: body,
+          requestContentType: req.headers["content-type"],
+          durationMs,
+          durationClass,
+          responseStatus: 200,
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: fallbackBody,
+        });
+        return sendText(res, 200, fallbackBody, {
+          "Content-Type": "application/json; charset=utf-8",
+        });
+      }
+
+      // --- Forward request to Stitch with timeout + retry ---
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, REQUEST_TIMEOUT_MS);
+
+      // Abort the upstream request if the client goes away, so we stop paying for
+      // work nobody is waiting for. The listener stays attached for the whole
+      // request so a late disconnect is still detected.
+      let upstreamInFlight = false;
+      const onClientClose = () => {
+        if (!res.writableEnded) {
+          clientDisconnected = true;
+          if (upstreamInFlight) {
+            controller.abort();
+          }
+        }
+      };
+      res.on("close", onClientClose);
 
       let response;
+      let lastError;
+      const maxAttempts = UPSTREAM_RETRY_ENABLED ? Math.max(1, UPSTREAM_RETRY_ATTEMPTS) : 1;
+
       try {
-        response = await fetch(STITCH_URL, {
-          method: req.method,
-          headers: buildForwardHeaders(req, token, apiKey, projectId),
-          body,
-          signal: controller.signal,
-        });
+        upstreamInFlight = true;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          try {
+            response = await fetch(STITCH_URL, {
+              method: req.method,
+              headers: buildForwardHeaders(req, token, apiKey, projectId),
+              body,
+              signal: controller.signal,
+            });
+            lastError = undefined;
+            break;
+          } catch (fetchError) {
+            lastError = fetchError;
+
+            const canRetry =
+              attempt < maxAttempts &&
+              !timedOut &&
+              !clientDisconnected &&
+              isTransientUpstreamError(fetchError);
+
+            if (!canRetry) {
+              throw fetchError;
+            }
+
+            const delayMs = UPSTREAM_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+            console.warn(
+              `⚠️ Upstream attempt ${attempt}/${maxAttempts} failed (${describeFetchError(fetchError)}). Retrying in ${delayMs}ms...`,
+            );
+            await sleep(delayMs);
+          }
+        }
       } finally {
+        upstreamInFlight = false;
         clearTimeout(timeoutId);
+      }
+
+      if (!response) {
+        throw lastError || new Error("Upstream request failed");
       }
 
       const contentType = response.headers.get("content-type") || "";
@@ -2102,10 +2396,15 @@ const server = http.createServer(async (req, res) => {
         const streamChunks = [];
         try {
           for await (const chunk of response.body) {
+            if (clientDisconnected || res.writableEnded) {
+              break;
+            }
             res.write(chunk);
             streamChunks.push(chunk);
           }
-          res.end();
+          if (!res.writableEnded) {
+            res.end();
+          }
         } catch (streamError) {
           if (!res.writableEnded) {
             res.end();
@@ -2191,21 +2490,39 @@ const server = http.createServer(async (req, res) => {
         });
       }
     } catch (error) {
-      console.error("❌ Proxy error:", error);
       const durationMs = Date.now() - requestStartedAt;
       const durationClass = classifyDuration(durationMs);
       const isTimeout = error.name === "AbortError" || error.name === "TimeoutError";
+      const errorDetail = describeFetchError(error);
+
+      // Client went away mid-flight: nothing to respond to, just record it.
+      if (clientDisconnected && !res.writableEnded) {
+        console.warn(`⚠️ Client disconnected before upstream responded (${errorDetail})`);
+        recordMetrics({
+          method: req.method,
+          path: url.pathname,
+          status: 499,
+          durationMs,
+          isError: false,
+        });
+        appendSummaryLog(
+          `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 499 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: client disconnected\n`,
+        );
+        return;
+      }
+
+      console.error("❌ Proxy error:", errorDetail);
 
       recordMetrics({
         method: req.method,
         path: url.pathname,
-        status: isTimeout ? 504 : 500,
+        status: isTimeout ? 504 : 502,
         durationMs,
         isError: true,
       });
 
       appendSummaryLog(
-        `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: ${isTimeout ? 504 : 500} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: ${error.message || "Unknown proxy error"}\n`,
+        `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: ${isTimeout ? 504 : 502} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: ${errorDetail}\n`,
       );
 
       writeDetailedDebugLog({
@@ -2218,11 +2535,15 @@ const server = http.createServer(async (req, res) => {
         requestContentType: req.headers["content-type"],
         durationMs,
         durationClass,
-        responseStatus: isTimeout ? 504 : 500,
+        responseStatus: isTimeout ? 504 : 502,
         responseHeaders: {},
         responseBody: "",
         error,
       });
+
+      if (res.writableEnded) {
+        return;
+      }
 
       if (isTimeout) {
         return sendJson(res, 504, {
@@ -2235,20 +2556,32 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      return sendText(res, 500, error.message || "Unknown proxy error");
+      // Always answer with a JSON-RPC error object so MCP clients can parse it.
+      return sendJson(res, 502, {
+        jsonrpc: "2.0",
+        error: {
+          code: -32006,
+          message: `Upstream request to Stitch failed: ${errorDetail}`,
+        },
+        id: null,
+      });
     }
   }
 
-  return sendText(res, 404, "Not found");
+  return sendJson(res, 404, {
+    jsonrpc: "2.0",
+    error: { code: -32601, message: `Not found: ${req.method} ${url.pathname}` },
+    id: null,
+  });
 });
 
-server.listen(MCP_SERVER_PORT, () => {
+server.listen(MCP_SERVER_PORT, MCP_SERVER_HOST, () => {
   const hasApiKey = Boolean(STITCH_API_KEY);
   const hasProjectId = Boolean(DEFAULT_STITCH_PROJECT_ID);
   console.log(
     `🚀 Stitch MCP Proxy (apiKey=${hasApiKey ? "env" : "header"}, projectId=${hasProjectId ? "env" : "optional"}) running at:`,
   );
-  console.log(`👉 http://localhost:${MCP_SERVER_PORT}/mcp`);
+  console.log(`👉 http://${MCP_SERVER_HOST}:${MCP_SERVER_PORT}/mcp`);
   if (LOG_ENABLED) {
     console.log(
       `🪵 Logging enabled (${LOG_LEVEL}) -> ${path.join(LOG_DIR, LOG_FILE_NAME)}`,
@@ -2293,6 +2626,12 @@ server.listen(MCP_SERVER_PORT, () => {
   }
   console.log(`⏱️  Request timeout: ${REQUEST_TIMEOUT_MS}ms`);
   console.log(`📦 Max body size: ${MAX_BODY_SIZE_BYTES} bytes`);
+  console.log(
+    `🔁 Upstream retry: ${UPSTREAM_RETRY_ENABLED ? `enabled (${UPSTREAM_RETRY_ATTEMPTS} attempts, ${UPSTREAM_RETRY_BASE_DELAY_MS}ms base delay)` : "disabled"}`,
+  );
+  if (LOCAL_FALLBACK_METHODS.size) {
+    console.log(`🧩 Local fallbacks: ${Array.from(LOCAL_FALLBACK_METHODS).join(",")}`);
+  }
 });
 
 // --- Graceful Shutdown ---

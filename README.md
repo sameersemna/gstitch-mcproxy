@@ -29,6 +29,9 @@ HTTP proxy for Google Stitch MCP with:
 - Proxies MCP requests to Stitch with **SSE streaming** for long-running operations.
 - Validates `Origin` header per MCP Streamable HTTP spec (2026-07-28).
 - Enforces configurable rate limits, request timeouts, and body size limits.
+- Retries transient upstream failures (HTTP/2 stream resets, socket hangups).
+- Answers `GET`/`DELETE`/`PUT` locally with a JSON-RPC 405 (Stitch only implements `POST`).
+- Answers `prompts/list` locally with an empty list (Stitch resets the stream for it).
 
 `GET /logs`
 - Opens an interactive log viewer dashboard in the browser.
@@ -88,6 +91,10 @@ STITCH_PROJECT_ID=your-project-id
 ```
 
 > **Note:** `STITCH_PROJECT_ID` is intentionally **not** in the headers. Either set it in your server `.env`, or have the agent pass it through `arguments.projectId` on each tool call.
+
+> **Note:** Do **not** add a `requestTimeout` field. VS Code's HTTP MCP schema only accepts
+> `type`, `url`, `headers`, and `oauth`; unknown fields are silently ignored. Long-running
+> Stitch calls (60s+) are handled by the proxy's own `REQUEST_TIMEOUT_MS` setting.
 
 ## Logging
 
@@ -153,8 +160,32 @@ Streaming responses are logged in full after the stream completes, so debug logs
 | `RATE_LIMIT_BURST` | `20` | Maximum burst size for rate limiter. |
 | `CORS_ORIGIN` | `*` | CORS allowed origin. Set to specific origin for production. |
 | `SHUTDOWN_DRAIN_MS` | `15000` | Max time to drain connections on SIGTERM/SIGINT. |
+| `UPSTREAM_RETRY_ENABLED` | `true` | Retry transient upstream failures. |
+| `UPSTREAM_RETRY_ATTEMPTS` | `3` | Max attempts per upstream request. |
+| `UPSTREAM_RETRY_BASE_DELAY_MS` | `250` | Base delay for exponential backoff. |
+| `LOCAL_FALLBACK_METHODS` | `prompts/list` | Methods answered locally instead of forwarded. |
 
 **Origin Validation:** Per the MCP Streamable HTTP spec (2026-07-28), the proxy validates the `Origin` header on `/mcp` requests. Invalid origins receive HTTP 403.
+
+## Upstream Resilience
+
+Stitch occasionally resets the HTTP/2 stream mid-request. Node's `fetch()` reports this as a
+bare `TypeError: fetch failed`, hiding the real cause (`ERR_HTTP2_STREAM_ERROR`). The proxy:
+
+1. **Unwraps the cause** — logs and returns `fetch failed (ERR_HTTP2_STREAM_ERROR)` instead of `fetch failed`.
+2. **Retries transient failures** — up to `UPSTREAM_RETRY_ATTEMPTS` with exponential backoff. Timeouts and HTTP error responses are never retried.
+3. **Returns JSON-RPC errors** — upstream failures return HTTP 502 with a JSON-RPC error object (code `-32006`) rather than a plain-text body, so MCP clients can parse them.
+4. **Aborts on client disconnect** — if the client goes away, the upstream request is cancelled and logged as status `499`.
+
+### Methods Stitch does not implement
+
+Stitch resets the HTTP/2 stream for `prompts/list` (it returns no response at all). Clients
+see this as `fetch failed` and some retry capability discovery in a tight loop — the logs
+showed ~29,000 failed discovery cycles in a single day. The proxy now answers
+`prompts/list` locally with `{"prompts": []}`, which is spec-compliant and stops the loop.
+
+`GET`, `DELETE`, and `PUT` on `/mcp` are also answered locally with a JSON-RPC 405. Stitch
+returns a Google HTML error page for these, which is not a valid MCP response.
 
 ## Metrics (Prometheus)
 

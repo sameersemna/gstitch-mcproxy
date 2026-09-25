@@ -72,12 +72,67 @@ echo "9) Summary log API check"
 curl -sS "${MCP_SERVER_URL}/api/logs/summary?limit=5" | jq '.total, (.lines | length)'
 
 echo "10) Path traversal protection check (expect 403)"
-HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "${MCP_SERVER_URL}/api/logs/../../../etc/passwd")
+# --path-as-is is required: without it curl normalises the ".." segments client-side
+# and the request never reaches the proxy as a traversal attempt.
+HTTP_CODE=$(curl -sS --path-as-is -o /dev/null -w "%{http_code}" "${MCP_SERVER_URL}/api/logs/..%2f..%2f..%2fetc/passwd")
 if [ "$HTTP_CODE" = "403" ]; then
   echo "   PASS: Path traversal blocked (HTTP $HTTP_CODE)"
 else
   echo "   FAIL: Expected 403, got HTTP $HTTP_CODE"
 fi
+
+echo "11) prompts/list local fallback (expect 200 + empty prompts)"
+curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
+  -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":11,"method":"prompts/list","params":{}}' | jq -e '.result.prompts == []' >/dev/null \
+  && echo "   PASS: prompts/list answered locally" \
+  || echo "   FAIL: prompts/list did not return an empty prompts list"
+
+echo "12) GET /mcp returns JSON-RPC 405 (expect 405 + JSON body)"
+GET_BODY=$(curl -sS -X GET "${MCP_SERVER_URL}/mcp" \
+  -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
+  -H 'Accept: text/event-stream')
+GET_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -X GET "${MCP_SERVER_URL}/mcp" \
+  -H "STITCH_API_KEY: ${STITCH_API_KEY}" \
+  -H 'Accept: text/event-stream')
+if [ "$GET_CODE" = "405" ] && echo "$GET_BODY" | jq -e '.error.code == -32005' >/dev/null 2>&1; then
+  echo "   PASS: GET /mcp returns JSON-RPC 405"
+else
+  echo "   FAIL: Expected JSON-RPC 405, got HTTP $GET_CODE with body: $GET_BODY"
+fi
+
+echo "13) DELETE /mcp returns JSON-RPC 405 (expect 405 + JSON body)"
+DEL_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE "${MCP_SERVER_URL}/mcp" \
+  -H "STITCH_API_KEY: ${STITCH_API_KEY}")
+if [ "$DEL_CODE" = "405" ]; then
+  echo "   PASS: DELETE /mcp returns 405"
+else
+  echo "   FAIL: Expected 405, got HTTP $DEL_CODE"
+fi
+
+echo "14) Missing API key returns JSON-RPC 401 (expect 401 + JSON body)"
+NOAUTH_BODY=$(curl -sS -X POST "${MCP_SERVER_URL}/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":14,"method":"tools/list","params":{}}')
+if echo "$NOAUTH_BODY" | jq -e '.error.code == -32007' >/dev/null 2>&1; then
+  echo "   PASS: Missing API key returns JSON-RPC error"
+else
+  echo "   FAIL: Expected JSON-RPC -32007, got: $NOAUTH_BODY"
+fi
+
+echo "15) Unknown route returns JSON-RPC 404 (expect 404 + JSON body)"
+NF_BODY=$(curl -sS "${MCP_SERVER_URL}/does-not-exist")
+if echo "$NF_BODY" | jq -e '.error.code == -32601' >/dev/null 2>&1; then
+  echo "   PASS: Unknown route returns JSON-RPC error"
+else
+  echo "   FAIL: Expected JSON-RPC -32601, got: $NF_BODY"
+fi
+
+echo "16) Metrics latency sum is non-zero after traffic"
+curl -sS "${MCP_SERVER_URL}/metrics" | grep -E '^gstitch_proxy_latency_seconds_sum' | head -1
 
 echo ""
 echo "All tests complete."
