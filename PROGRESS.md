@@ -9,17 +9,17 @@
 
 | Field | Value |
 |---|---|
-| Phase | **1 — Crash-proofing and correctness** (started) |
-| Step | 1.1 — ★C2 crash-proofing |
-| Status | All gates green: `npm test` 43 pass / 27 todo / 0 fail, `npm run lint` clean, `npm run typecheck` clean, `./run.sh` starts + `/health` 200 + clean SIGTERM |
+| Phase | **1 — Crash-proofing and correctness** — most items done, see below |
+| Step | 1.1–1.5 landed in `dfd243c`. Remaining: 1.6 (logging correctness: ★N5/★N6) and 1.7 (`test.sh` key leak, ★N8) |
+| Status | Gates green: 89 tests → **70 pass / 19 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
 | Started | 2026-10-17 |
 
 ## 2. Last green commit
 
 | Field | Value |
 |---|---|
-| SHA | **`920b4ee`** — `chore: add packaging, test harness and the in-process server seam (phase 0)` |
-| test | 43 pass / 27 todo / 0 fail (70 tests) |
+| SHA | **`dfd243c`** — `fix: crash-proof the request path and correct MCP header/id handling (phase 1)` |
+| test | 70 pass / 19 todo / 0 fail (89 tests) |
 | lint | clean |
 | typecheck | clean |
 | verify | `npm run verify` exits 0 |
@@ -285,7 +285,7 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 | ID | Reproduced | Evidence (actual observed output) | Regression test |
 |---|---|---|---|
 | ★C1 | ✅ **YES** | Fake upstream that resets the socket after receiving a `tools/call create_project`: upstream **received `create_project` 3 times** (`{"count":3,...}`). Client got `502 {"code":-32006,"message":"...fetch failed (ECONNRESET)"}`. | `test/bugs.test.js` → Phase 3 |
-| ★C2 | ✅ **YES** | `printf 'GET /health HTTP/1.1\r\nHost: [bad\r\n\r\n' \| nc 127.0.0.1 8799` ⇒ process **died** (`ERR_INVALID_URL`, `base: 'http://[bad'`, `Node.js v26.3.0` on stdout, port no longer listening). | `test/bugs.test.js` → Phase 1 |
+| ★C2 | ✅ **YES** | `printf 'GET /health HTTP/1.1\r\nHost: [bad\r\n\r\n' \| nc 127.0.0.1 8799` ⇒ process **died** (`ERR_INVALID_URL`, `base: 'http://[bad'`, `Node.js v26.3.0` on stdout, port no longer listening). | **FIXED `dfd243c`** — 6 tests in `test/phase1.test.js`; verified with 50 malformed Hosts in a row |
 | ★C3 | ✅ **YES** (read path proven; write path follows from identical code) | Preflight/actual request from `Origin: https://evil.example` ⇒ `Access-Control-Allow-Origin: *`; `POST /token` with **no credentials** ⇒ `{"access_token":"local-proxy-token"}`. | → Phase 5 |
 | ★C4 | ✅ **YES** | `GET /api/logs` with `Origin: https://evil.example` ⇒ **200** + `access-control-allow-origin: *` (log dir listing, project IDs, sizes). `/health` also 200 with no auth. | → Phase 5 |
 | ★C5 | ✅ **YES** | **NEW (found in Phase 0).** A normal streamed (SSE) response **crashes the process**. The streaming branch ends without a `return`, so control falls through to the trailing `sendJson(res, 404, …)`, which throws `ERR_HTTP_HEADERS_SENT` as an unhandled rejection. Reproduced against a baseline worktree at `2578c26`: one POST that received `Content-Type: text/event-stream` ⇒ `throw new ERR_HTTP_HEADERS_SENT('write')` at `index.js:1849` ⇒ process gone (port refused afterwards). Every real Stitch call that streams would kill the proxy. | **Fixed in Phase 0** (missing `return`); regression test `★C5` is active and passing. |
@@ -294,8 +294,8 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 
 | ID | Reproduced | Evidence | Regression test |
 |---|---|---|---|
-| ★P1 | ✅ **YES** | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS). | Phase 1 |
-| ★P2 | ✅ **YES** | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths. | Phase 1 |
+| ★P1 | ✅ **YES** | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS). | **FIXED `dfd243c`** — 5 tests; explicit request/response allow-lists |
+| ★P2 | ✅ **YES** | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths. | **FIXED `dfd243c`** — 7 tests incl. `id:0`, string ids and arrays |
 | P3 | read-only | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element. | Phase 3 |
 | P4 | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. Whether Stitch implements the others is **unknown** → `scripts/live-probe.js` (Phase 7), owner key required. | Phase 7 |
 | P5 | read-only | `notifications/cancelled` is forwarded upstream but never aborts the in-flight upstream request. Note: on Streamable HTTP ≥ 2026-07-28 cancellation *is* stream closure, so the proxy's own client-close handling is the primary mechanism. | Phase 3 |
@@ -307,7 +307,7 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 | ★S1 | ✅ **YES** | `REQUEST_TIMEOUT_MS=2000`; client POSTed at a never-ending SSE upstream and aborted at **600 ms**. At **+6.6 s** the upstream TCP connection was still `ESTAB` (`127.0.0.1:8812 ↔ 127.0.0.1:35890`), held open by the proxy. Neither the headers timeout nor the client-close listener aborted the body. | Phase 4 |
 | S2 | read-only | `res.write(chunk)` return value ignored in the stream loop ⇒ unbounded buffering for a slow client. | Phase 4 |
 | S3 | read-only | `const streamChunks = []` + `streamChunks.push(chunk)` run unconditionally, even when `LOG_ENABLED=false` or `LOG_LEVEL!=debug`. | Phase 4 |
-| ★S4 | ✅ **YES** | 12 sequential keep-alive requests on one socket ⇒ `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 close listeners added to [Socket].` | Phase 1 |
+| ★S4 | ✅ **YES** | 12 sequential keep-alive requests on one socket ⇒ `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 close listeners added to [Socket].` | **FIXED `dfd243c`** — tracking moved to `server.on("connection")`; 40-request regression test |
 | S5 | read-only | `readSummaryLogLines()` → `fs.readFileSync` of the **whole** file; `appendSummaryLog` → `appendFileSync` + `statSync` + `renameSync`; `scanLogDirectory`/`readLogFile` → sync fs; `getAccessToken()` → `execSync("gcloud auth print-access-token")`. | Phase 4 |
 | S6 | read-only | `requestTimeout`/`headersTimeout`/`keepAliveTimeout` left at Node defaults (300 s/60 s/5 s); no cap on concurrent upstream requests. | Phase 4 |
 
@@ -315,11 +315,11 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 
 | Bug | Location | Status |
 |---|---|---|
-| ★ `HEAD /health` ⇒ **404** (only `GET` matches) | `index.js:1978` | ✅ reproduced (`HEAD /health -> 404`, `GET /health -> 200`) |
+| ★N3 `HEAD /health` ⇒ **404** (only `GET` matches) | `index.js:1978` | ✅ reproduced (`HEAD /health -> 404`, `GET /health -> 200`); **FIXED `dfd243c`** (also `/metrics`, `/instructions`) |
 | `getClientIp` trusts `X-Forwarded-For` unconditionally | `index.js:601` | confirmed |
 | Per-project debug logs use `DEFAULT_STITCH_PROJECT_ID`, never `params.arguments.projectId` | `index.js:794` callers | confirmed |
 | Catch-block debug log passes `requestBody: undefined` | `index.js:~2560` | confirmed |
-| `console.warn("No project ID configured…")` fires **every** request | `index.js:2273` | ✅ observed: `⚠️ No project ID configured…` printed after a single request |
+| `console.warn("No project ID configured…")` fires **every** request | `index.js:2273` | ✅ observed; **FIXED `dfd243c`** (once per process, ★N7) |
 | `test.sh` prints the API key | `test.sh:22` | confirmed |
 | `INSTRUCTIONS.md` / `LOG_DIR` resolve against `process.cwd()` | `index.js:44,53` | confirmed |
 | `.well-known` hardcodes `http://localhost:${port}` | `index.js:1955-1967` | confirmed |
@@ -328,7 +328,7 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 | `STITCH_API_KEY` header underscore is dropped by nginx by default | README | documented in Phase 9 |
 | No `package.json`, `engines`, lint, tests or CI | — | fixed in Phase 0/7 |
 | ★N1 | The "log viewer disabled" guard is `url.pathname.startsWith("/logs")`, which never matches `/api/logs` or `/api/logs/summary` (or the file route). With `LOG_VIEWER_ENABLED=false` the HTML page 404s but the JSON APIs and raw log files stay reachable. | discovered in Phase 0 while writing characterization tests; pinned by `KNOWN GAP: /api/logs* is still served…`; fixed in Phase 5 |
-| ★N2 | The credential check runs **before** the body reader, so an unauthenticated over-sized body is answered `401` without ever being bounded/read — the 413 size limit is unreachable for unauthenticated callers. | discovered in Phase 0; pinned by `KNOWN GAP: an over-sized body from an unauthenticated caller…`; fixed in Phase 1 |
+| ★N2 | The credential check ran **before** the body reader, so an unauthenticated over-sized body was answered `401` without ever being bounded/read — the 413 size limit was unreachable for unauthenticated callers. | **FIXED `dfd243c`** — body read first through a bounded reader |
 
 ### 10.5 Idempotency classes
 
@@ -391,35 +391,74 @@ verifying `./run.sh`.
 
 ---
 
-## 14. Next action (exact, for a fresh session)
+## 14. Phase 1 — what landed (`dfd243c`)
 
-> **Phase 1 — Crash-proofing and correctness.** All work in `hardening/v1`; each item is
-> `promote its ★ todo to a real test` → `fix` → `npm run verify` → `commit`.
+| Finding | Status | Fix | Tests |
+|---|---|---|---|
+| ★C2 malformed input kills the process | **fixed** | URL from a constant base; `parseHostHeader()`; `handleRequest()` wrapper → `-32603`; `server.on("clientError")` | 6 |
+| ★S4 listener leak per request | **fixed** | `trackConnection` once per socket | 2 |
+| ★N3 `HEAD /health` ⇒ 404 | **fixed** | `HEAD` on `/health`, `/metrics`, `/instructions` | 3 |
+| ★P2 error responses always `id: null` | **fixed** | `sendJsonRpcError()` + `extractJsonRpcIds()`; arrays supported | 7 |
+| ★N2 size limit unreachable when unauthenticated | **fixed** | bounded body read **before** the credential decision | 1 |
+| ★P1 MCP headers dropped both ways | **fixed** | explicit request/response allow-lists; `X-Accel-Buffering: no` on SSE | 5 |
+| ★N7 per-request project-ID warning | **fixed** | `state.warnings.noProjectId` one-shot guard | — |
+
+Deliberate behaviour changes (all recorded):
+1. An unauthenticated over-sized body now answers **413** rather than 401 (★N2). Required to
+   enforce the limit at all; `MAX_BODY_SIZE_BYTES` is still the same knob.
+2. Error responses now echo the JSON-RPC `id` instead of `null` (★P2). Strictly better for
+   clients; a client that mis-relied on `null` would have to be buggy already.
+3. A malformed `Host` now answers **400 `-32600`**. Previously it killed the process. Which
+   hosts are *acceptable* is unchanged — that allow-list is Phase 5.
+4. Requests carrying MCP headers now forward them upstream. Non-MCP headers, cookies and
+   hop-by-hop headers are still dropped.
+
+### Error-code table (extended)
+
+| Code | Meaning | Where |
+|---|---|---|
+| `-32001` | Invalid Origin header (403) | origin validation |
+| `-32002` | Rate limit exceeded (429) | token bucket |
+| `-32003` | Request body too large (413) | bounded body reader |
+| `-32004` | Upstream request timed out (504) | catch, `AbortError`/`TimeoutError` |
+| `-32005` | Method not allowed on `/mcp` (405) | GET/DELETE/HEAD/other |
+| `-32006` | Upstream request to Stitch failed (502) | catch, generic |
+| `-32007` | Missing API key (401) | credential check |
+| `-32601` | Not found (404) | router fallthrough |
+| **`-32600`** | **Invalid Request (400)** | **malformed `Host` or malformed HTTP (added in Phase 1)** |
+| **`-32603`** | **Internal error (500)** | **`handleRequest` safety wrapper (added in Phase 1)** |
+| `-32008` | _reserved_ | unsafe call with unknown outcome (Phase 3) |
+
+---
+
+## 15. Next action (exact, for a fresh session)
+
+> **Phase 1, remaining items: 1.6 (logging correctness) and 1.7 (`test.sh`).** All work in
+> `hardening/v1`; each item is `promote its ★ todo to a real test` → `fix` →
+> `npm run verify` → `commit`.
 >
-> 1. **★C2 (crash-proofing).** Build the request URL from a constant base
->    (`new URL(req.url, "http://localhost")`) and validate `Host` separately against an
->    allow-list. Wrap the whole handler so it *always* answers with JSON-RPC `-32603` on an
->    unexpected throw. Add `server.on("clientError")`. Add
->    `process.on("unhandledRejection")` / `("uncaughtException")` that log rather than exit
->    (only genuinely fatal errors may exit). Test: `Host: [bad` ⇒ the process survives and the
->    client gets a JSON-RPC error.
-> 2. **★S4 (listener leak).** Move `trackConnection` to `server.on("connection")`. Test: 20
->    keep-alive requests on one socket produce no `MaxListenersExceededWarning`.
-> 3. **★N3.** Support `HEAD` on `/health` and `/instructions`; switch the Docker and
->    compose healthchecks to `node -e "fetch(…)"` (BusyBox `wget --spider` sends HEAD).
-> 4. **★P2 (id echo).** Parse the body early and bounded; echo the JSON-RPC `id` in *every*
->    error path (401/403/409/413/429/502/504), including one error per request for arrays.
-> 5. **★P1 (header allow-lists).** Forward upstream: `MCP-Protocol-Version`, `Mcp-Session-Id`,
->    `Last-Event-ID`, `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*`, `Accept`, `Content-Type` + creds.
->    Forward to the client: `Content-Type`, `MCP-Protocol-Version`, `Mcp-Session-Id`,
->    `Last-Event-ID`, `Retry-After`, `WWW-Authenticate`, `X-Accel-Buffering`, `Cache-Control`.
->    One test per header.
-> 6. **Logging correctness.** Take the project ID from `params.arguments.projectId` (N5);
->    include the request body in the error-path debug log (N6); move the
->    "No project ID configured" warning to a once-per-process startup warning (N7).
-> 7. **★N2.** Reject an over-sized body with `413` regardless of authentication (bound the
->    read before the credential decision, or read-then-authenticate).
-> 8. **`test.sh`.** Never print the API key (print `configured` / `missing`) (N8).
+> 1. **★N5 — per-project debug logs use the wrong project ID.** `writeDetailedDebugLog` is
+>    called with `projectId` = `DEFAULT_STITCH_PROJECT_ID`, so nearly everything lands in
+>    `logs/unknown-project/`. Extract the ID actually used from
+>    `params.arguments.projectId` (a new helper, e.g. `extractProjectIdFromBody(body)`), and
+>    fall back to the env default. Test: a `tools/call` with `arguments.projectId` writes into
+>    a directory named after that ID.
+> 2. **★N6 — the error-path debug log loses the request body.** In the `catch` block,
+>    `writeDetailedDebugLog` is called with `requestBody: undefined`, so the requests you most
+>    need to debug have no body. Pass the already-read `body` (it is in scope) and a real
+>    timestamp. Test: a 502 with debug logging on writes a detail file containing the body.
+> 3. **★N8 — `test.sh` prints the API key.** Replace
+>    `echo "Testing … with API key ${STITCH_API_KEY} and project ID …"` with a
+>    `configured`/`missing` indication so keys never reach terminals or CI logs. Also switch
+>    its health check to tolerate `HEAD`, and keep it the opt-in live smoke test
+>    (`STITCH_LIVE=1`, never run by `npm test`).
+> 4. Confirm `docs`/`PROGRESS.md` are updated and the two remaining Phase-1 items are ticked.
 >
-> Phase 1 gate: every promoted ★ test passes, the characterization tests are unchanged, then
-> commit `fix: crash-proof the request path and correct MCP header/id handling (phase 1)`.
+> Phase 1 gate: all Phase-1 ★ tests pass, characterization tests consistent, then commit
+> `fix: attribute debug logs to the right project and stop leaking the API key (phase 1b)`.
+>
+> **Then Phase 2 — modularize (pure refactor).** `sequential-thinking` + `architect` →
+> `docs/adr/0002-module-layout.md`, then move code mechanically into the `src/` tree one area
+> per commit, with zero test edits other than import paths. Phase 2 is what removes the
+> module-level `state` limitation noted in §13, which in turn lets the test suite run several
+> differently-configured proxies in one process.

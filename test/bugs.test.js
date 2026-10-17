@@ -5,11 +5,9 @@
  * Regression tests for the audit findings in `PROGRESS.md` §10.
  *
  * Every `★` finding was reproduced against commit `2578c26` with a scripted fake upstream.
- * Each one is captured here **as a failing-on-purpose `test.todo(...)`** while the finding is
- * still open, so that:
- *   - the suite stays green during Phase 0, and
- *   - the reproduction is already written when the fix lands, at which point the `todo` is
- *     replaced by a real `await t.test(...)`.
+ * Findings fixed in Phase 1 have their promotions in `test/phase1.test.js`; the entries still
+ * below are the ones that remain open, captured as `test.todo(...)` so the suite stays green
+ * while the reproduction is already written.
  *
  * `test.todo()` bodies are *documentation*: `node:test` does not execute them.
  */
@@ -101,11 +99,6 @@ test.todo(
 );
 
 test.todo(
-  "★C2 – a malformed Host header must not terminate the process " +
-    "[reproduced: `Host: [bad` → ERR_INVALID_URL → process exit code 1]",
-);
-
-test.todo(
   "★C3 – a cross-origin browser must not be able to use the proxy with the server's env API key " +
     "[reproduced: preflight + POST from Origin: https://evil.example succeeded]",
 );
@@ -118,21 +111,6 @@ test.todo(
 // ---------------------------------------------------------------------------
 // Protocol correctness
 // ---------------------------------------------------------------------------
-
-test.todo(
-  "★P1 – MCP request headers must be forwarded upstream " +
-    "[reproduced: MCP-Protocol-Version, Mcp-Session-Id and Last-Event-ID never reached Stitch]",
-);
-
-test.todo(
-  "★P1b – MCP response headers must be forwarded to the client " +
-    "[reproduced: Mcp-Session-Id, Retry-After and WWW-Authenticate were dropped]",
-);
-
-test.todo(
-  "★P2 – error responses must echo the JSON-RPC id from the request body " +
-    "[reproduced: 413/401/502 all returned id:null although the body carried id:55]",
-);
 
 test.todo(
   "P3 – batch (array) requests must be classified by their most-unsafe element " +
@@ -170,11 +148,6 @@ test.todo(
 );
 
 test.todo(
-  "★S4 – connection tracking must not add one 'close' listener per request " +
-    "[reproduced: MaxListenersExceededWarning after 12 keep-alive requests on one socket]",
-);
-
-test.todo(
   "S5 – no synchronous I/O on the request path " +
     "(readFileSync of the whole summary log, appendFileSync, statSync, execSync gcloud)",
 );
@@ -188,18 +161,8 @@ test.todo(
 // ---------------------------------------------------------------------------
 
 test.todo(
-  "★N3 – HEAD /health must return 200, not 404 " +
-    "[reproduced: HEAD /health → 404, GET /health → 200]",
-);
-
-test.todo(
   "N1 – /api/logs* must honour LOG_VIEWER_ENABLED=false " +
     "(the guard only matches paths starting with '/logs')",
-);
-
-test.todo(
-  "N2 – an over-sized body must be rejected with 413 even for unauthenticated callers " +
-    "(the credential check runs before the body reader)",
 );
 
 test.todo(
@@ -213,10 +176,6 @@ test.todo(
 test.todo(
   "N6 – the error-path debug log must include the request body " +
     "(it currently passes requestBody: undefined)",
-);
-
-test.todo(
-  'N7 – "No project ID configured" must warn once at startup, not on every request',
 );
 
 test.todo("N8 – test.sh must never print the API key (print configured/missing instead)");
