@@ -170,17 +170,6 @@ test.todo(
 );
 
 test.todo(
-  "N5 – per-project debug logs must use params.arguments.projectId, not the env default",
-);
-
-test.todo(
-  "N6 – the error-path debug log must include the request body " +
-    "(it currently passes requestBody: undefined)",
-);
-
-test.todo("N8 – test.sh must never print the API key (print configured/missing instead)");
-
-test.todo(
   "N9 – INSTRUCTIONS.md and LOG_DIR must resolve relative to __dirname, not process.cwd()",
 );
 

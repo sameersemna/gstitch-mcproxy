@@ -2356,6 +2356,52 @@ async function readRequestBody(req, maxBytes) {
 }
 
 /**
+ * Resolves the Stitch project ID a request actually operates on, for **log attribution**.
+ *
+ * Finding ★N5: the debug and summary logs were keyed on `DEFAULT_STITCH_PROJECT_ID` (the env
+ * default) and never looked at the ID in the tool arguments, so almost every request landed in
+ * `logs/unknown-project/` and the log viewer was useless for per-project debugging.
+ *
+ * Note this deliberately does **not** feed the upstream `X-Stitch-Project-Id` header: supplying
+ * the project ID via headers was deprecated in commit c125891, and the upstream header source
+ * stays unchanged.
+ *
+ * @param {string|undefined|null} body
+ * @returns {string|null} the project ID from the arguments, or null when absent
+ */
+function extractProjectIdFromBody(body) {
+  if (!body || typeof body !== "string") {
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+
+  for (const message of messages) {
+    const args = message?.params?.arguments;
+    if (!args || typeof args !== "object") {
+      continue;
+    }
+
+    // `projectId` is Stitch's spelling; accept `project_id` defensively for hand-written calls.
+    for (const key of ["projectId", "project_id"]) {
+      const value = args[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extracts the JSON-RPC `id`(s) from a request body so that error responses can echo them.
  *
  * Finding P2: every error path used to hard-code `id: null`, so a client waiting on request
@@ -2768,6 +2814,11 @@ async function routeRequest(req, res) {
     // that the client is waiting on (finding P2).
     /** @type {any} */
     let requestIds = null;
+    // Same reason: the catch block logs the failing request (finding ★N6).
+    /** @type {string|undefined} */
+    let requestBody;
+    /** @type {string|null|undefined} */
+    let logProjectId;
 
     // --- Method guard (MCP Streamable HTTP spec) ---
     // Stitch only implements POST. Forwarding GET/DELETE/PUT upstream returns a
@@ -2854,6 +2905,7 @@ async function routeRequest(req, res) {
         readBytes,
       } = await readRequestBody(req, MAX_BODY_SIZE_BYTES);
 
+      requestBody = body;
       requestIds = extractJsonRpcIds(body);
 
       if (bodyTooLarge) {
@@ -2882,7 +2934,11 @@ async function routeRequest(req, res) {
       let apiKey = STITCH_API_KEY;
       // Headers never override the project ID by design (see commit c125891); the
       // per-request project ID lives in `params.arguments.projectId` instead.
-      const projectId = DEFAULT_STITCH_PROJECT_ID;
+      const upstreamProjectId = DEFAULT_STITCH_PROJECT_ID;
+      // Log attribution uses the ID the call actually names, falling back to the env default
+      // (finding ★N5). This is separate from `upstreamProjectId` on purpose.
+      const projectId = extractProjectIdFromBody(body) || DEFAULT_STITCH_PROJECT_ID;
+      logProjectId = projectId;
 
       if (req.headers["stitch_api_key"]) {
         apiKey = req.headers["stitch_api_key"];
@@ -3015,7 +3071,7 @@ async function routeRequest(req, res) {
           try {
             response = await fetch(STITCH_URL, {
               method: req.method,
-              headers: buildForwardHeaders(req, token, apiKey, projectId),
+              headers: buildForwardHeaders(req, token, apiKey, upstreamProjectId),
               body,
               signal: controller.signal,
             });
@@ -3213,13 +3269,16 @@ async function routeRequest(req, res) {
         `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: ${isTimeout ? 504 : 502} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: ${errorDetail}\n`,
       );
 
+      // Finding ★N6: this used `requestBody: undefined` and the env project ID, so the
+      // requests most worth debugging — the ones that failed — came out with no body and the
+      // wrong project. The body is already in scope and bounded by the size limit.
       writeDetailedDebugLog({
         requestLogId,
         timestamp: new Date().toISOString(),
         req,
         url,
-        projectId: DEFAULT_STITCH_PROJECT_ID,
-        requestBody: undefined,
+        projectId: logProjectId || DEFAULT_STITCH_PROJECT_ID,
+        requestBody,
         requestContentType: req.headers["content-type"],
         durationMs,
         durationClass,

@@ -15,15 +15,28 @@ MCP_SERVER_URL="http://${MCP_SERVER_HOST}:${MCP_SERVER_PORT}"
 STITCH_PROJECT_ID=${STITCH_PROJECT_ID:-}
 STITCH_API_KEY=${STITCH_API_KEY:-}
 
-echo "Testing MCP server at ${MCP_SERVER_URL} with API key ${STITCH_API_KEY} and project ID ${STITCH_PROJECT_ID:-<none>}"
+# Never print the key itself: this script is routinely run in terminals that are recorded,
+# shared or piped into CI logs, and the value is a live Stitch credential. Report only whether
+# it is present.
+if [ -n "${STITCH_API_KEY}" ]; then
+  API_KEY_STATE="configured"
+else
+  API_KEY_STATE="missing"
+fi
+
+if [ -n "${STITCH_PROJECT_ID}" ]; then
+  PROJECT_ID_STATE="configured"
+else
+  PROJECT_ID_STATE="missing (optional — tools requiring a project need it via arguments)"
+fi
+
+echo "Testing MCP server at ${MCP_SERVER_URL}"
+echo "  api key: ${API_KEY_STATE}"
+echo "  project id: ${PROJECT_ID_STATE}"
 
 if [ -z "${STITCH_API_KEY}" ]; then
   echo "Missing STITCH_API_KEY in environment/.env"
   exit 1
-fi
-
-if [ -z "${STITCH_PROJECT_ID}" ]; then
-  echo "ℹ️  STITCH_PROJECT_ID is not set (optional — tools requiring a project will need it via arguments)"
 fi
 
 echo "1) Well-known check"
