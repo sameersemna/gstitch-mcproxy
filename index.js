@@ -40,84 +40,324 @@ function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
 
 loadEnvFile();
 
-const STITCH_URL = process.env.STITCH_URL || "https://stitch.googleapis.com/mcp";
-const INSTRUCTIONS_PATH = path.resolve(process.cwd(), "INSTRUCTIONS.md");
-let STITCH_API_KEY = process.env.STITCH_API_KEY;
-let DEFAULT_STITCH_PROJECT_ID = process.env.STITCH_PROJECT_ID;
-const MCP_SERVER_PORT = process.env.MCP_SERVER_PORT || 8787;
-// Bind address. Defaults to all interfaces so existing LAN setups keep working.
-// Set MCP_SERVER_HOST=127.0.0.1 to bind loopback only (recommended by the MCP spec).
-const MCP_SERVER_HOST = process.env.MCP_SERVER_HOST || "0.0.0.0";
-const LOG_ENABLED = String(process.env.LOG_ENABLED || "false").toLowerCase() === "true";
-const LOG_LEVEL = String(process.env.LOG_LEVEL || "info").toLowerCase();
-const LOG_DIR = path.resolve(process.cwd(), process.env.LOG_DIR || "logs");
-const LOG_FILE_NAME = process.env.LOG_FILE_NAME || "proxy.log";
-const LOG_MAX_BODY_CHARS = Number.parseInt(process.env.LOG_MAX_BODY_CHARS || "20000", 10);
-const LOG_MAX_FILE_SIZE_BYTES = Number.parseInt(process.env.LOG_MAX_FILE_SIZE_BYTES || "5242880", 10);
-const LOG_MAX_ROTATED_FILES = Number.parseInt(process.env.LOG_MAX_ROTATED_FILES || "5", 10);
-const LOG_SKIP_MCP_GET = String(process.env.LOG_SKIP_MCP_GET || "true").toLowerCase() === "true";
-const LOG_SLOW_REQUEST_MS = Number.parseInt(process.env.LOG_SLOW_REQUEST_MS || "2000", 10);
-const LOG_VERY_SLOW_REQUEST_MS = Number.parseInt(process.env.LOG_VERY_SLOW_REQUEST_MS || "5000", 10);
-const LOG_SKIP_MCP_METHODS = new Set(
-  String(
-    process.env.LOG_SKIP_MCP_METHODS ||
+// --- Configuration -----------------------------------------------------------
+// Every value below is a `let` binding so that `applyConfig(overrides)` can replace it
+// per proxy instance. That is the Phase 0 seam which lets the test harness start a proxy
+// in-process on an ephemeral port with injected configuration instead of mutating
+// `process.env`. Phase 2 moves these onto a frozen, validated config object.
+//
+// NOTE (Phase 0 limitation): the bindings are module-level, so only the *last* created
+// proxy's configuration is active in a given process. Tests that need different configs
+// therefore live in separate files, which `node:test` runs in separate processes.
+let STITCH_URL;
+let INSTRUCTIONS_PATH;
+let STITCH_API_KEY;
+let DEFAULT_STITCH_PROJECT_ID;
+let MCP_SERVER_PORT;
+let MCP_SERVER_HOST;
+let LOG_ENABLED;
+let LOG_LEVEL;
+let LOG_DIR;
+let LOG_FILE_NAME;
+let LOG_MAX_BODY_CHARS;
+let LOG_MAX_FILE_SIZE_BYTES;
+let LOG_MAX_ROTATED_FILES;
+let LOG_SKIP_MCP_GET;
+let LOG_SLOW_REQUEST_MS;
+let LOG_VERY_SLOW_REQUEST_MS;
+let LOG_SKIP_MCP_METHODS;
+let REQUEST_TIMEOUT_MS;
+let MAX_BODY_SIZE_BYTES;
+let UPSTREAM_RETRY_ENABLED;
+let UPSTREAM_RETRY_ATTEMPTS;
+let UPSTREAM_RETRY_BASE_DELAY_MS;
+let LOCAL_FALLBACK_METHODS;
+let RATE_LIMIT_ENABLED;
+let RATE_LIMIT_MAX_RPS;
+let RATE_LIMIT_BURST;
+let CORS_ORIGIN;
+let METRICS_ENABLED;
+let SHUTDOWN_DRAIN_MS;
+let LOG_VIEWER_ENABLED;
+let LOG_VIEWER_MAX_FILE_BYTES;
+let LOG_SUMMARY_MAX_LINES;
+
+function parseBoolean(value, fallback) {
+  return String(value === undefined || value === null ? fallback : value).toLowerCase() === "true";
+}
+
+function parseInteger(value, fallback) {
+  const parsed = Number.parseInt(value === undefined || value === null ? String(fallback) : String(value), 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function parseCsvSet(value, fallback) {
+  return new Set(
+    String(value === undefined || value === null ? fallback : value)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * The set of configuration keys that may be injected via `createProxyServer(overrides)`
+ * (and the keys `resolveConfigFromEnv` produces). Keeping the list explicit means a typo
+ * in a test fails loudly instead of being silently ignored.
+ */
+const CONFIG_KEYS = [
+  "STITCH_URL",
+  "STITCH_API_KEY",
+  "DEFAULT_STITCH_PROJECT_ID",
+  "MCP_SERVER_PORT",
+  "MCP_SERVER_HOST",
+  "LOG_ENABLED",
+  "LOG_LEVEL",
+  "LOG_DIR",
+  "LOG_FILE_NAME",
+  "LOG_MAX_BODY_CHARS",
+  "LOG_MAX_FILE_SIZE_BYTES",
+  "LOG_MAX_ROTATED_FILES",
+  "LOG_SKIP_MCP_GET",
+  "LOG_SLOW_REQUEST_MS",
+  "LOG_VERY_SLOW_REQUEST_MS",
+  "LOG_SKIP_MCP_METHODS",
+  "REQUEST_TIMEOUT_MS",
+  "MAX_BODY_SIZE_BYTES",
+  "UPSTREAM_RETRY_ENABLED",
+  "UPSTREAM_RETRY_ATTEMPTS",
+  "UPSTREAM_RETRY_BASE_DELAY_MS",
+  "LOCAL_FALLBACK_METHODS",
+  "RATE_LIMIT_ENABLED",
+  "RATE_LIMIT_MAX_RPS",
+  "RATE_LIMIT_BURST",
+  "CORS_ORIGIN",
+  "METRICS_ENABLED",
+  "SHUTDOWN_DRAIN_MS",
+  "LOG_VIEWER_ENABLED",
+  "LOG_VIEWER_MAX_FILE_BYTES",
+  "LOG_SUMMARY_MAX_LINES",
+];
+
+/**
+ * Installs a resolved config object into the module-level bindings.
+ * @param {Record<string, any>} resolved
+ */
+function assignConfig(resolved) {
+  // `INSTRUCTIONS_PATH` is not overridable: it is derived from the process CWD, exactly as
+  // before this seam existed (documented as a known issue and fixed in Phase 6).
+  INSTRUCTIONS_PATH = path.resolve(process.cwd(), "INSTRUCTIONS.md");
+
+  for (const key of CONFIG_KEYS) {
+    configTargets[key].set(resolved[key]);
+  }
+}
+
+/**
+ * Writable handles for each configuration binding.
+ *
+ * `applyConfig` cannot assign to the `let` bindings directly because it must do so
+ * dynamically from `CONFIG_KEYS`. A closure per key keeps the assignment typed and
+ * exhaustively covered at module load (`assertConfigTargetsComplete`).
+ */
+const configTargets = (() => {
+  /** @type {Record<string, { get: () => any, set: (value: any) => void }>} */
+  const targets = {};
+  const define = (key, get, set) => {
+    Object.defineProperty(targets, key, {
+      value: { get, set },
+      enumerable: true,
+    });
+  };
+
+  define("STITCH_URL", () => STITCH_URL, (v) => (STITCH_URL = v));
+  define("STITCH_API_KEY", () => STITCH_API_KEY, (v) => (STITCH_API_KEY = v));
+  define(
+    "DEFAULT_STITCH_PROJECT_ID",
+    () => DEFAULT_STITCH_PROJECT_ID,
+    (v) => (DEFAULT_STITCH_PROJECT_ID = v),
+  );
+  define("MCP_SERVER_PORT", () => MCP_SERVER_PORT, (v) => (MCP_SERVER_PORT = v));
+  define("MCP_SERVER_HOST", () => MCP_SERVER_HOST, (v) => (MCP_SERVER_HOST = v));
+  define("LOG_ENABLED", () => LOG_ENABLED, (v) => (LOG_ENABLED = v));
+  define("LOG_LEVEL", () => LOG_LEVEL, (v) => (LOG_LEVEL = v));
+  define("LOG_DIR", () => LOG_DIR, (v) => (LOG_DIR = v));
+  define("LOG_FILE_NAME", () => LOG_FILE_NAME, (v) => (LOG_FILE_NAME = v));
+  define("LOG_MAX_BODY_CHARS", () => LOG_MAX_BODY_CHARS, (v) => (LOG_MAX_BODY_CHARS = v));
+  define(
+    "LOG_MAX_FILE_SIZE_BYTES",
+    () => LOG_MAX_FILE_SIZE_BYTES,
+    (v) => (LOG_MAX_FILE_SIZE_BYTES = v),
+  );
+  define(
+    "LOG_MAX_ROTATED_FILES",
+    () => LOG_MAX_ROTATED_FILES,
+    (v) => (LOG_MAX_ROTATED_FILES = v),
+  );
+  define("LOG_SKIP_MCP_GET", () => LOG_SKIP_MCP_GET, (v) => (LOG_SKIP_MCP_GET = v));
+  define("LOG_SLOW_REQUEST_MS", () => LOG_SLOW_REQUEST_MS, (v) => (LOG_SLOW_REQUEST_MS = v));
+  define(
+    "LOG_VERY_SLOW_REQUEST_MS",
+    () => LOG_VERY_SLOW_REQUEST_MS,
+    (v) => (LOG_VERY_SLOW_REQUEST_MS = v),
+  );
+  define("LOG_SKIP_MCP_METHODS", () => LOG_SKIP_MCP_METHODS, (v) => (LOG_SKIP_MCP_METHODS = v));
+  define("REQUEST_TIMEOUT_MS", () => REQUEST_TIMEOUT_MS, (v) => (REQUEST_TIMEOUT_MS = v));
+  define("MAX_BODY_SIZE_BYTES", () => MAX_BODY_SIZE_BYTES, (v) => (MAX_BODY_SIZE_BYTES = v));
+  define(
+    "UPSTREAM_RETRY_ENABLED",
+    () => UPSTREAM_RETRY_ENABLED,
+    (v) => (UPSTREAM_RETRY_ENABLED = v),
+  );
+  define(
+    "UPSTREAM_RETRY_ATTEMPTS",
+    () => UPSTREAM_RETRY_ATTEMPTS,
+    (v) => (UPSTREAM_RETRY_ATTEMPTS = v),
+  );
+  define(
+    "UPSTREAM_RETRY_BASE_DELAY_MS",
+    () => UPSTREAM_RETRY_BASE_DELAY_MS,
+    (v) => (UPSTREAM_RETRY_BASE_DELAY_MS = v),
+  );
+  define(
+    "LOCAL_FALLBACK_METHODS",
+    () => LOCAL_FALLBACK_METHODS,
+    (v) => (LOCAL_FALLBACK_METHODS = v),
+  );
+  define("RATE_LIMIT_ENABLED", () => RATE_LIMIT_ENABLED, (v) => (RATE_LIMIT_ENABLED = v));
+  define("RATE_LIMIT_MAX_RPS", () => RATE_LIMIT_MAX_RPS, (v) => (RATE_LIMIT_MAX_RPS = v));
+  define("RATE_LIMIT_BURST", () => RATE_LIMIT_BURST, (v) => (RATE_LIMIT_BURST = v));
+  define("CORS_ORIGIN", () => CORS_ORIGIN, (v) => (CORS_ORIGIN = v));
+  define("METRICS_ENABLED", () => METRICS_ENABLED, (v) => (METRICS_ENABLED = v));
+  define("SHUTDOWN_DRAIN_MS", () => SHUTDOWN_DRAIN_MS, (v) => (SHUTDOWN_DRAIN_MS = v));
+  define("LOG_VIEWER_ENABLED", () => LOG_VIEWER_ENABLED, (v) => (LOG_VIEWER_ENABLED = v));
+  define(
+    "LOG_VIEWER_MAX_FILE_BYTES",
+    () => LOG_VIEWER_MAX_FILE_BYTES,
+    (v) => (LOG_VIEWER_MAX_FILE_BYTES = v),
+  );
+  define(
+    "LOG_SUMMARY_MAX_LINES",
+    () => LOG_SUMMARY_MAX_LINES,
+    (v) => (LOG_SUMMARY_MAX_LINES = v),
+  );
+
+  return targets;
+})();
+
+/**
+ * Builds the resolved configuration object from environment variables.
+ * The precedence is unchanged from the pre-seam code: env var, else hard-coded default.
+ *
+ * @param {Record<string, string|undefined>} env
+ * @returns {Record<string, any>}
+ */
+function resolveConfigFromEnv(env) {
+  return {
+    STITCH_URL: env.STITCH_URL || "https://stitch.googleapis.com/mcp",
+    STITCH_API_KEY: env.STITCH_API_KEY,
+    DEFAULT_STITCH_PROJECT_ID: env.STITCH_PROJECT_ID,
+    MCP_SERVER_PORT: parseInteger(env.MCP_SERVER_PORT, 8787),
+    // Bind address. Defaults to all interfaces so existing LAN setups keep working.
+    // Set MCP_SERVER_HOST=127.0.0.1 to bind loopback only (recommended by the MCP spec).
+    MCP_SERVER_HOST: env.MCP_SERVER_HOST || "0.0.0.0",
+    LOG_ENABLED: parseBoolean(env.LOG_ENABLED, "false"),
+    LOG_LEVEL: String(env.LOG_LEVEL || "info").toLowerCase(),
+    LOG_DIR: path.resolve(process.cwd(), env.LOG_DIR || "logs"),
+    LOG_FILE_NAME: env.LOG_FILE_NAME || "proxy.log",
+    LOG_MAX_BODY_CHARS: parseInteger(env.LOG_MAX_BODY_CHARS, 20000),
+    LOG_MAX_FILE_SIZE_BYTES: parseInteger(env.LOG_MAX_FILE_SIZE_BYTES, 5242880),
+    LOG_MAX_ROTATED_FILES: parseInteger(env.LOG_MAX_ROTATED_FILES, 5),
+    LOG_SKIP_MCP_GET: parseBoolean(env.LOG_SKIP_MCP_GET, "true"),
+    LOG_SLOW_REQUEST_MS: parseInteger(env.LOG_SLOW_REQUEST_MS, 2000),
+    LOG_VERY_SLOW_REQUEST_MS: parseInteger(env.LOG_VERY_SLOW_REQUEST_MS, 5000),
+    LOG_SKIP_MCP_METHODS: parseCsvSet(
+      env.LOG_SKIP_MCP_METHODS,
       "initialize,notifications/initialized,notifications/progress,ping",
-  )
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean),
-);
+    ),
 
-// --- Request safety & resilience ---
-const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.REQUEST_TIMEOUT_MS || "120000", 10);
-const MAX_BODY_SIZE_BYTES = Number.parseInt(process.env.MAX_BODY_SIZE_BYTES || "10485760", 10);
+    // --- Request safety & resilience ---
+    REQUEST_TIMEOUT_MS: parseInteger(env.REQUEST_TIMEOUT_MS, 120000),
+    MAX_BODY_SIZE_BYTES: parseInteger(env.MAX_BODY_SIZE_BYTES, 10485760),
 
-// --- Upstream retry (transient network / HTTP2 stream resets) ---
-const UPSTREAM_RETRY_ENABLED =
-  String(process.env.UPSTREAM_RETRY_ENABLED || "true").toLowerCase() === "true";
-const UPSTREAM_RETRY_ATTEMPTS = Number.parseInt(process.env.UPSTREAM_RETRY_ATTEMPTS || "3", 10);
-const UPSTREAM_RETRY_BASE_DELAY_MS = Number.parseInt(
-  process.env.UPSTREAM_RETRY_BASE_DELAY_MS || "250",
-  10,
-);
+    // --- Upstream retry (transient network / HTTP2 stream resets) ---
+    UPSTREAM_RETRY_ENABLED: parseBoolean(env.UPSTREAM_RETRY_ENABLED, "true"),
+    UPSTREAM_RETRY_ATTEMPTS: parseInteger(env.UPSTREAM_RETRY_ATTEMPTS, 3),
+    UPSTREAM_RETRY_BASE_DELAY_MS: parseInteger(env.UPSTREAM_RETRY_BASE_DELAY_MS, 250),
 
-// --- Local fallbacks for methods Stitch does not implement ---
-// Stitch resets the HTTP/2 stream for `prompts/list`, which surfaces to clients as
-// "fetch failed" and makes some clients retry discovery in a tight loop.
-const LOCAL_FALLBACK_METHODS = new Set(
-  String(process.env.LOCAL_FALLBACK_METHODS || "prompts/list")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean),
-);
+    // --- Local fallbacks for methods Stitch does not implement ---
+    // Stitch resets the HTTP/2 stream for `prompts/list`, which surfaces to clients as
+    // "fetch failed" and makes some clients retry discovery in a tight loop.
+    LOCAL_FALLBACK_METHODS: parseCsvSet(env.LOCAL_FALLBACK_METHODS, "prompts/list"),
 
-// --- Rate limiting ---
-const RATE_LIMIT_ENABLED =
-  String(process.env.RATE_LIMIT_ENABLED || "false").toLowerCase() === "true";
-const RATE_LIMIT_MAX_RPS = Number.parseInt(process.env.RATE_LIMIT_MAX_RPS || "10", 10);
-const RATE_LIMIT_BURST = Number.parseInt(process.env.RATE_LIMIT_BURST || "20", 10);
+    // --- Rate limiting ---
+    RATE_LIMIT_ENABLED: parseBoolean(env.RATE_LIMIT_ENABLED, "false"),
+    RATE_LIMIT_MAX_RPS: parseInteger(env.RATE_LIMIT_MAX_RPS, 10),
+    RATE_LIMIT_BURST: parseInteger(env.RATE_LIMIT_BURST, 20),
 
-// --- CORS ---
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+    // --- CORS ---
+    CORS_ORIGIN: env.CORS_ORIGIN || "*",
 
-// --- Metrics ---
-const METRICS_ENABLED =
-  String(process.env.METRICS_ENABLED || "true").toLowerCase() === "true";
+    // --- Metrics ---
+    METRICS_ENABLED: parseBoolean(env.METRICS_ENABLED, "true"),
 
-// --- Graceful shutdown ---
-const SHUTDOWN_DRAIN_MS = Number.parseInt(process.env.SHUTDOWN_DRAIN_MS || "15000", 10);
+    // --- Graceful shutdown ---
+    SHUTDOWN_DRAIN_MS: parseInteger(env.SHUTDOWN_DRAIN_MS, 15000),
 
-// Log viewer configuration
-const LOG_VIEWER_ENABLED =
-  String(process.env.LOG_VIEWER_ENABLED || "true").toLowerCase() === "true";
-const LOG_VIEWER_MAX_FILE_BYTES = Number.parseInt(
-  process.env.LOG_VIEWER_MAX_FILE_BYTES || "10485760",
-  10,
-);
-const LOG_SUMMARY_MAX_LINES = Number.parseInt(
-  process.env.LOG_SUMMARY_MAX_LINES || "200",
-  10,
-);
+    // Log viewer configuration
+    LOG_VIEWER_ENABLED: parseBoolean(env.LOG_VIEWER_ENABLED, "true"),
+    LOG_VIEWER_MAX_FILE_BYTES: parseInteger(env.LOG_VIEWER_MAX_FILE_BYTES, 10485760),
+    LOG_SUMMARY_MAX_LINES: parseInteger(env.LOG_SUMMARY_MAX_LINES, 200),
+  };
+}
+
+/**
+ * Resolves configuration from `env`, layers `overrides` on top, and installs the result
+ * into the module-level bindings. Called once at module load and once per
+ * `createProxyServer()`.
+ *
+ * @param {Record<string, string|undefined>} [env] defaults to `process.env`
+ * @param {Record<string, unknown>} [overrides] explicit values (already parsed) for tests
+ * @returns {Record<string, any>} the resolved configuration
+ */
+function applyConfig(env = process.env, overrides = {}) {
+  const resolved = resolveConfigFromEnv(env);
+
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (!CONFIG_KEYS.includes(key)) {
+      throw new Error(
+        `Unknown configuration override: ${key}. Known keys: ${CONFIG_KEYS.join(", ")}`,
+      );
+    }
+    resolved[key] = value;
+  }
+
+  // Re-resolve derived paths so an override of a relative path still becomes absolute.
+  if (overrides.LOG_DIR) {
+    resolved.LOG_DIR = path.resolve(process.cwd(), String(overrides.LOG_DIR));
+  }
+
+  assignConfig(resolved);
+  return resolved;
+}
+
+/**
+ * Reads the current configuration out of the module-level bindings.
+ * Used for startup logging, `/health` and tests.
+ *
+ * @returns {Record<string, any>}
+ */
+function getConfig() {
+  /** @type {Record<string, any>} */
+  const snapshot = { INSTRUCTIONS_PATH };
+  for (const key of CONFIG_KEYS) {
+    snapshot[key] = configTargets[key].get();
+  }
+  return snapshot;
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -329,6 +569,7 @@ function rotateLogFileIfNeeded(filePath) {
 }
 
 function stripAnsiSequences(value) {
+  // eslint-disable-next-line no-control-regex -- ANSI escape sequences are the point.
   return String(value).replace(/\u001b\[[0-9;]*m/g, "");
 }
 
@@ -371,6 +612,7 @@ function normalizeBodyForLogging(value, contentType) {
   const rawValue = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   const sanitizedValue = stripAnsiSequences(rawValue)
     .replace(/\r\n/g, "\n")
+    // eslint-disable-next-line no-control-regex -- strip NUL bytes from binary payloads.
     .replace(/\u0000/g, "")
     .trim();
 
@@ -596,7 +838,51 @@ function buildLocalFallbackResponse(requestBody) {
 
 // --- Rate Limiter (Token Bucket) ---
 
-const rateLimitBuckets = new Map();
+/**
+ * Creates the mutable per-proxy-instance state.
+ *
+ * Phase 0 seam: everything that used to be a module-level singleton lives here so that a
+ * test can start a proxy on an ephemeral port without touching another instance's state.
+ * Phase 2 spreads these over purpose-built modules.
+ *
+ * @param {Record<string, any>} [config] resolved configuration for this instance
+ */
+function createState(config) {
+  const cfg = config || getConfig();
+  return {
+    config: cfg,
+    rateLimitBuckets: new Map(),
+    metrics: {
+      requestsTotal: 0,
+      requestsByMethod: {},
+      requestsByStatus: {},
+      latencyBuckets: { 100: 0, 500: 0, 1000: 0, 5000: 0, 30000: 0, 120000: 0, Infinity: 0 },
+      latencySumSeconds: 0,
+      errorsTotal: 0,
+      activeConnections: 0,
+      rateLimitedTotal: 0,
+      startTime: Date.now(),
+    },
+    activeConnections: new Set(),
+    tokenCache: { value: null, fetchedAt: 0 },
+    isShuttingDown: false,
+    /** One-shot guards so startup/first-use warnings are not repeated per request. */
+    warnings: { noProjectId: false },
+  };
+}
+
+/**
+ * Mutable state of the proxy instance that is currently handling requests.
+ *
+ * The pre-seam code used module-level singletons; the seam keeps that shape via a single
+ * pointer rather than rewiring every call site. It is swapped by `createProxyServer()`.
+ * Phase 2 replaces this with explicit dependency injection.
+ */
+let state = createState();
+
+function getState() {
+  return state;
+}
 
 function getClientIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
@@ -607,6 +893,8 @@ function getClientIp(req) {
 }
 
 function checkRateLimit(clientIp) {
+  const rateLimitBuckets = state.rateLimitBuckets;
+
   if (!RATE_LIMIT_ENABLED) {
     return { allowed: true };
   }
@@ -632,31 +920,23 @@ function checkRateLimit(clientIp) {
   return { allowed: false, retryAfter: Math.ceil(1 / RATE_LIMIT_MAX_RPS) };
 }
 
-// Clean up stale rate limit entries every 5 minutes
+// Clean up stale rate limit entries every 5 minutes.
+// NOTE: this interval closes over the *current* `state`, which is the state of the most
+// recently created proxy instance. Phase 2 moves the sweep onto the instance so that two
+// proxies in one process each sweep their own buckets.
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, bucket] of rateLimitBuckets) {
+  const buckets = state.rateLimitBuckets;
+  for (const [ip, bucket] of buckets) {
     if (now - bucket.lastRefill > 300000) {
-      rateLimitBuckets.delete(ip);
+      buckets.delete(ip);
     }
   }
 }, 300000).unref();
 
-// --- Metrics Collector ---
-
-const metrics = {
-  requestsTotal: 0,
-  requestsByMethod: {},
-  requestsByStatus: {},
-  latencyBuckets: { 100: 0, 500: 0, 1000: 0, 5000: 0, 30000: 0, 120000: 0, Infinity: 0 },
-  latencySumSeconds: 0,
-  errorsTotal: 0,
-  activeConnections: 0,
-  rateLimitedTotal: 0,
-  startTime: Date.now(),
-};
-
 function recordMetrics({ method, path, status, durationMs, isError }) {
+  const metrics = state.metrics;
+
   metrics.requestsTotal += 1;
 
   const methodKey = `${method} ${path}`;
@@ -665,7 +945,7 @@ function recordMetrics({ method, path, status, durationMs, isError }) {
   const statusKey = String(status);
   metrics.requestsByStatus[statusKey] = (metrics.requestsByStatus[statusKey] || 0) + 1;
 
-  for (const [boundary, count] of Object.entries(metrics.latencyBuckets)) {
+  for (const boundary of Object.keys(metrics.latencyBuckets)) {
     if (durationMs <= Number(boundary)) {
       metrics.latencyBuckets[boundary] += 1;
       break;
@@ -680,6 +960,7 @@ function recordMetrics({ method, path, status, durationMs, isError }) {
 }
 
 function renderPrometheusMetrics() {
+  const metrics = state.metrics;
   const uptime = (Date.now() - metrics.startTime) / 1000;
   const lines = [
     "# HELP gstitch_proxy_uptime_seconds Proxy uptime in seconds",
@@ -744,9 +1025,10 @@ function renderPrometheusMetrics() {
 
 // --- Connection Tracker (for graceful shutdown) ---
 
-const activeConnections = new Set();
-
 function trackConnection(socket) {
+  const activeConnections = state.activeConnections;
+  const metrics = state.metrics;
+
   activeConnections.add(socket);
   metrics.activeConnections = activeConnections.size;
   socket.on("close", () => {
@@ -791,6 +1073,25 @@ function appendSummaryLog(line) {
   }
 }
 
+/**
+ * Writes one per-request detail file when debug logging is on.
+ *
+ * @param {{
+ *   requestLogId: string,
+ *   timestamp: string,
+ *   req: import("http").IncomingMessage,
+ *   url: URL,
+ *   projectId?: string|null,
+ *   requestBody?: any,
+ *   requestContentType?: string,
+ *   durationMs?: number,
+ *   durationClass?: string,
+ *   responseStatus?: number,
+ *   responseHeaders?: Record<string, any>,
+ *   responseBody?: any,
+ *   error?: any,
+ * }} entry
+ */
 function writeDetailedDebugLog({
   requestLogId,
   timestamp,
@@ -1807,18 +2108,24 @@ function parseAuthHeader(authHeader) {
   }
 }
 
-if (!STITCH_API_KEY) {
-  console.log(
-    "ℹ️ No STITCH_API_KEY in .env. Will accept it from request headers:",
-  );
-  console.log("   - Set STITCH_API_KEY in mcp.json headers or .env");
-  console.log("   - gcloud fallback is OFF by default (set ENABLE_GCLOUD_FALLBACK=1)");
-}
+/**
+ * Prints the credential guidance exactly once per process, and only when the process
+ * actually starts listening (see the entry point at the bottom of this file). Before the
+ * Phase 0 seam these messages were emitted at module load, which made them fire before the
+ * configuration was known.
+ */
+function logCredentialGuidance() {
+  if (!STITCH_API_KEY) {
+    console.log("ℹ️ No STITCH_API_KEY in .env. Will accept it from request headers:");
+    console.log("   - Set STITCH_API_KEY in mcp.json headers or .env");
+    console.log("   - gcloud fallback is OFF by default (set ENABLE_GCLOUD_FALLBACK=1)");
+  }
 
-if (!DEFAULT_STITCH_PROJECT_ID) {
-  console.log(
-    "ℹ️ No STITCH_PROJECT_ID in .env (optional — agents can provide project ID via chat)",
-  );
+  if (!DEFAULT_STITCH_PROJECT_ID) {
+    console.log(
+      "ℹ️ No STITCH_PROJECT_ID in .env (optional — agents can provide project ID via chat)",
+    );
+  }
 }
 
 function getAccessToken() {
@@ -1830,19 +2137,17 @@ function getAccessToken() {
   }
 }
 
-let cachedToken = null;
-let lastFetch = 0;
-
 function getCachedToken() {
   const now = Date.now();
+  const cache = state.tokenCache;
 
-  if (!cachedToken || now - lastFetch > 5 * 60 * 1000) {
-    cachedToken = getAccessToken();
-    lastFetch = now;
+  if (!cache.value || now - cache.fetchedAt > 5 * 60 * 1000) {
+    cache.value = getAccessToken();
+    cache.fetchedAt = now;
     console.log("🔄 Refreshed OAuth token");
   }
 
-  return cachedToken;
+  return cache.value;
 }
 
 function sendJson(res, statusCode, payload) {
@@ -1924,7 +2229,7 @@ function validateOrigin(req) {
   return true;
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   // Track connection for graceful shutdown
   trackConnection(req.socket);
 
@@ -2029,11 +2334,11 @@ const server = http.createServer(async (req, res) => {
       },
       metrics: {
         enabled: METRICS_ENABLED,
-        requestsTotal: metrics.requestsTotal,
-        errorsTotal: metrics.errorsTotal,
-        activeConnections: metrics.activeConnections,
-        rateLimitedTotal: metrics.rateLimitedTotal,
-        uptimeSeconds: Math.floor((Date.now() - metrics.startTime) / 1000),
+        requestsTotal: state.metrics.requestsTotal,
+        errorsTotal: state.metrics.errorsTotal,
+        activeConnections: state.metrics.activeConnections,
+        rateLimitedTotal: state.metrics.rateLimitedTotal,
+        uptimeSeconds: Math.floor((Date.now() - state.metrics.startTime) / 1000),
       },
       timestamp: new Date().toISOString(),
     });
@@ -2170,7 +2475,7 @@ const server = http.createServer(async (req, res) => {
 
     // --- Origin validation (MCP spec requirement) ---
     if (!validateOrigin(req)) {
-      metrics.rateLimitedTotal += 1;
+      state.metrics.rateLimitedTotal += 1;
       return sendJson(res, 403, {
         jsonrpc: "2.0",
         error: { code: -32001, message: "Invalid Origin header" },
@@ -2182,7 +2487,7 @@ const server = http.createServer(async (req, res) => {
     const clientIp = getClientIp(req);
     const rateLimitResult = checkRateLimit(clientIp);
     if (!rateLimitResult.allowed) {
-      metrics.rateLimitedTotal += 1;
+      state.metrics.rateLimitedTotal += 1;
       res.setHeader("Retry-After", String(rateLimitResult.retryAfter));
       return sendJson(res, 429, {
         jsonrpc: "2.0",
@@ -2194,7 +2499,9 @@ const server = http.createServer(async (req, res) => {
     try {
       // Accept credentials from request headers or fallback to env
       let apiKey = STITCH_API_KEY;
-      let projectId = DEFAULT_STITCH_PROJECT_ID;
+      // Headers never override the project ID by design (see commit c125891); the
+      // per-request project ID lives in `params.arguments.projectId` instead.
+      const projectId = DEFAULT_STITCH_PROJECT_ID;
 
       if (req.headers["stitch_api_key"]) {
         apiKey = req.headers["stitch_api_key"];
@@ -2447,6 +2754,12 @@ const server = http.createServer(async (req, res) => {
           responseHeaders: Object.fromEntries(response.headers.entries()),
           responseBody: fullResponseBody,
         });
+
+        // Finding ★C5: without this `return` control fell through to the trailing
+        // `sendJson(res, 404, ...)`, which threw `ERR_HTTP_HEADERS_SENT`. That unhandled
+        // rejection terminated the process, so the *first* streamed Stitch response killed
+        // the proxy. The response has already been fully written above.
+        return;
       } else {
         // Non-streaming: buffer and send
         const text = await response.text();
@@ -2573,9 +2886,54 @@ const server = http.createServer(async (req, res) => {
     error: { code: -32601, message: `Not found: ${req.method} ${url.pathname}` },
     id: null,
   });
-});
+}
 
-server.listen(MCP_SERVER_PORT, MCP_SERVER_HOST, () => {
+// --- Server factory ----------------------------------------------------------
+
+/**
+ * Creates a proxy `http.Server` **without** starting to listen.
+ *
+ * This is the Phase 0 test seam: tests call it with injected configuration and bind to an
+ * ephemeral port. Behaviour is identical to the pre-seam module-level server, apart from
+ * the injected configuration and the per-instance state.
+ *
+ * @param {{
+ *   env?: Record<string, string|undefined>,
+ *   overrides?: Record<string, unknown>,
+ *   onLog?: (line: string) => void,
+ * }} [options]
+ * @returns {import("http").Server} the server, not yet listening
+ */
+function createProxyServer(options = {}) {
+  const resolved = applyConfig(options.env || process.env, options.overrides || {});
+  state = createState(resolved);
+
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((error) => {
+      // Defensive: `handleRequest` has its own error handling, but a failure there must
+      // never surface as an unhandled rejection (which would terminate the process).
+      console.error("❌ Unhandled error in request handler:", error);
+      if (!res.headersSent && !res.writableEnded) {
+        try {
+          sendJson(res, 500, {
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal error" },
+            id: null,
+          });
+        } catch {
+          res.destroy();
+        }
+      }
+    });
+  });
+
+  // Expose the instance state for tests and graceful shutdown without widening the
+  // `http.Server` type for every consumer.
+  /** @type {any} */ (server).state = state;
+  return server;
+}
+
+function logStartupBanner() {
   const hasApiKey = Boolean(STITCH_API_KEY);
   const hasProjectId = Boolean(DEFAULT_STITCH_PROJECT_ID);
   console.log(
@@ -2632,17 +2990,15 @@ server.listen(MCP_SERVER_PORT, MCP_SERVER_HOST, () => {
   if (LOCAL_FALLBACK_METHODS.size) {
     console.log(`🧩 Local fallbacks: ${Array.from(LOCAL_FALLBACK_METHODS).join(",")}`);
   }
-});
+}
 
 // --- Graceful Shutdown ---
 
-let isShuttingDown = false;
-
-function gracefulShutdown(signal) {
-  if (isShuttingDown) {
+function gracefulShutdown(server, signal) {
+  if (state.isShuttingDown) {
     return;
   }
-  isShuttingDown = true;
+  state.isShuttingDown = true;
 
   console.log(`\n🛑 Received ${signal}. Shutting down gracefully...`);
 
@@ -2654,7 +3010,7 @@ function gracefulShutdown(signal) {
   // Give existing connections time to drain
   const drainStart = Date.now();
   const checkDrain = setInterval(() => {
-    const remaining = activeConnections.size;
+    const remaining = state.activeConnections.size;
     const elapsed = Date.now() - drainStart;
 
     if (remaining === 0) {
@@ -2671,5 +3027,45 @@ function gracefulShutdown(signal) {
   }, 500);
 }
 
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+// --- Entry point -------------------------------------------------------------
+// `index.js` must remain runnable as `node index.js` (Docker, systemd, run.sh) while also
+// being requireable from tests. `listen()` therefore only happens when this file is the
+// process entry point.
+
+const isMainModule = require.main === module;
+
+if (isMainModule) {
+  applyConfig();
+  logCredentialGuidance();
+  const server = createProxyServer();
+  server.listen(MCP_SERVER_PORT, MCP_SERVER_HOST, logStartupBanner);
+
+  process.on("SIGTERM", () => gracefulShutdown(server, "SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown(server, "SIGINT"));
+}
+
+module.exports = {
+  createProxyServer,
+  applyConfig,
+  getConfig,
+  createState,
+  getState,
+  handleRequest,
+  // Exported for tests and for Phase 1+ work; not part of the public HTTP contract.
+  buildLocalFallbackResponse,
+  validateOrigin,
+  setCorsHeaders,
+  parseAuthHeader,
+  parseJsonRpcMetadata,
+  isTransientUpstreamError,
+  describeFetchError,
+  redactHeaders,
+  renderPrometheusMetrics,
+  readRequestBody,
+  checkRateLimit,
+  getClientIp,
+  resolveLogFilePath,
+  createProxyServerInternals: {
+    CONFIG_KEYS,
+  },
+};
