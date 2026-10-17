@@ -464,7 +464,11 @@ test("rate limiting: when enabled, the burst is consumed and then 429 -32002 wit
   assert.ok(response.headers.get("retry-after"));
   const body = await readJson(response);
   assert.equal(body.error.code, -32002);
-  assert.equal(body.id, null);
+
+  // BEHAVIOUR CHANGED IN PHASE 1 (finding ★P2): the 429 body used to carry `id: null` even
+  // though the request carried `id: 99`, which left the client waiting on a pending call that
+  // would never resolve. The id is now echoed. See `test/phase1.test.js`.
+  assert.equal(body.id, 99, "the 429 must echo the request id");
 });
 
 test("CORS: default CORS_ORIGIN=* echoes a wildcard on every route", async (t) => {

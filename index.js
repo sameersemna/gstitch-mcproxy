@@ -2150,47 +2150,248 @@ function getCachedToken() {
   return cache.value;
 }
 
-function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(payload));
+/**
+ * Sends a JSON response.
+ *
+ * @param {import("http").ServerResponse} res
+ * @param {number} statusCode
+ * @param {any} payload
+ * @param {{ headers?: Record<string, string>, head?: boolean }} [options] `head` suppresses
+ *   the body while keeping `Content-Length`, as HTTP requires for a `HEAD` response.
+ */
+function sendJson(res, statusCode, payload, options = {}) {
+  const body = JSON.stringify(payload);
+  const headers = {
+    "Content-Type": "application/json",
+    "Content-Length": String(Buffer.byteLength(body)),
+    ...(options.headers || {}),
+  };
+
+  res.writeHead(statusCode, headers);
+  res.end(options.head ? undefined : body);
 }
 
-function sendText(res, statusCode, text, headers = {}) {
+/**
+ * @param {import("http").ServerResponse} res
+ * @param {number} statusCode
+ * @param {string} text
+ * @param {Record<string, string>} [headers]
+ * @param {{ head?: boolean }} [options]
+ */
+function sendText(res, statusCode, text, headers = {}, options = {}) {
   res.writeHead(statusCode, {
     "Content-Type": "text/plain; charset=utf-8",
     ...headers,
   });
-  res.end(text);
+  res.end(options.head ? undefined : text);
 }
 
-function sendHtml(res, statusCode, html) {
+/**
+ * @param {import("http").ServerResponse} res
+ * @param {number} statusCode
+ * @param {string} html
+ * @param {{ head?: boolean }} [options]
+ */
+function sendHtml(res, statusCode, html, options = {}) {
   res.writeHead(statusCode, {
     "Content-Type": "text/html; charset=utf-8",
   });
-  res.end(html);
+  res.end(options.head ? undefined : html);
 }
 
+// --- Upstream header allow-lists (MCP Streamable HTTP) -----------------------
+
+/**
+ * Request headers the proxy forwards to Stitch.
+ *
+ * Verified against the MCP specification (`2025-03-26` ... `2026-07-28` revisions of
+ * Streamable HTTP). The baseline rebuilt the header set from scratch, which silently
+ * dropped every protocol header (finding P1): `MCP-Protocol-Version` never reached the
+ * server at all, and a stateful upstream would have broken.
+ *
+ * `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` are the request-metadata headers introduced in
+ * `2026-07-28`; forwarding them keeps header/body consistency for a strict upstream.
+ *
+ * `Mcp-Session-Id` and `Last-Event-ID` belong to the `2025-03-26` ... `2025-11-25` revisions.
+ * A server supporting only `2026-07-28` is required to *ignore* them rather than reject
+ * them, so forwarding them is safe against both.
+ *
+ * Everything else -- cookies, unrelated custom headers, hop-by-hop headers -- stays local.
+ */
+const FORWARDED_REQUEST_HEADERS = [
+  "mcp-protocol-version",
+  "mcp-session-id",
+  "last-event-id",
+  "mcp-method",
+  "mcp-name",
+];
+
+/** Prefixes of forwarded request headers (the `Mcp-Param-{Name}` family). */
+const FORWARDED_REQUEST_HEADER_PREFIXES = ["mcp-param-"];
+
+/**
+ * Response headers the proxy forwards back to the client.
+ *
+ * All of these except `Content-Type` were dropped at baseline (finding P1): `Mcp-Session-Id`
+ * breaks a stateful session, `Retry-After` breaks back-off, and `WWW-Authenticate` breaks
+ * the OAuth flow. `X-Accel-Buffering` is added by the proxy itself for SSE responses, as
+ * the spec recommends.
+ */
+const FORWARDED_RESPONSE_HEADERS = [
+  "mcp-protocol-version",
+  "mcp-session-id",
+  "last-event-id",
+  "retry-after",
+  "www-authenticate",
+  "x-accel-buffering",
+  "cache-control",
+  "content-type",
+  "content-length",
+];
+
+/**
+ * Builds the upstream request headers: the allow-listed client headers plus the resolved
+ * credentials.
+ *
+ * @param {import("http").IncomingMessage} req
+ * @param {string|null} token
+ * @param {string|null|undefined} apiKey
+ * @param {string|null|undefined} projectId
+ * @returns {Record<string, string>}
+ */
 function buildForwardHeaders(req, token, apiKey, projectId) {
-  return {
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(apiKey ? { "X-Goog-Api-Key": apiKey } : {}),
-    "Content-Type": "application/json",
-    Accept: req.headers.accept || "application/json, text/event-stream",
-    ...(projectId ? { "X-Stitch-Project-Id": projectId } : {}),
-  };
+  /** @type {Record<string, string>} */
+  const headers = {};
+
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value === undefined) {
+      continue;
+    }
+    const lowerKey = key.toLowerCase();
+    const allowed =
+      FORWARDED_REQUEST_HEADERS.includes(lowerKey) ||
+      FORWARDED_REQUEST_HEADER_PREFIXES.some((prefix) => lowerKey.startsWith(prefix));
+
+    if (!allowed) {
+      continue;
+    }
+
+    headers[key] = Array.isArray(value) ? value.join(", ") : value;
+  }
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  if (apiKey) {
+    headers["X-Goog-Api-Key"] = apiKey;
+  }
+  headers["Content-Type"] = req.headers["content-type"] || "application/json";
+  headers.Accept = req.headers.accept || "application/json, text/event-stream";
+  if (projectId) {
+    headers["X-Stitch-Project-Id"] = projectId;
+  }
+
+  return headers;
 }
 
-async function readRequestBody(req) {
+/**
+ * Picks the allow-listed headers out of an upstream response.
+ *
+ * @param {Headers} upstreamHeaders
+ * @returns {Record<string, string>}
+ */
+function buildForwardResponseHeaders(upstreamHeaders) {
+  /** @type {Record<string, string>} */
+  const headers = {};
+
+  for (const name of FORWARDED_RESPONSE_HEADERS) {
+    const value = upstreamHeaders.get(name);
+    if (value !== null && value !== undefined && value !== "") {
+      headers[name] = value;
+    }
+  }
+
+  return headers;
+}
+
+/**
+ * Reads a request body with a hard size limit.
+ *
+ * Returns `{ tooLarge: true }` as soon as the limit is exceeded, so the caller can answer
+ * `413` **without buffering the rest of the payload** — the whole point of the limit. The
+ * bytes read so far are still returned so the caller can recover the JSON-RPC `id`.
+ *
+ * @param {import("http").IncomingMessage} req
+ * @param {number} maxBytes
+ * @returns {Promise<{ body: string|undefined, tooLarge: boolean, readBytes: number }>}
+ */
+async function readRequestBody(req, maxBytes) {
   if (req.method === "GET" || req.method === "HEAD") {
-    return undefined;
+    return { body: undefined, tooLarge: false, readBytes: 0 };
   }
 
   const chunks = [];
+  let readBytes = 0;
+
   for await (const chunk of req) {
+    // Accumulate the chunk *before* testing the limit: the bytes already read are what let
+    // the caller recover the JSON-RPC id for the 413 response. Memory stays bounded because
+    // this returns as soon as the limit is crossed, so at most one extra chunk is buffered.
     chunks.push(chunk);
+    readBytes += chunk.length;
+    if (readBytes > maxBytes) {
+      return {
+        body: Buffer.concat(chunks).toString("utf8"),
+        tooLarge: true,
+        readBytes,
+      };
+    }
   }
 
-  return chunks.length ? Buffer.concat(chunks).toString("utf8") : undefined;
+  return {
+    body: chunks.length ? Buffer.concat(chunks).toString("utf8") : undefined,
+    tooLarge: false,
+    readBytes,
+  };
+}
+
+/**
+ * Extracts the JSON-RPC `id`(s) from a request body so that error responses can echo them.
+ *
+ * Finding P2: every error path used to hard-code `id: null`, so a client waiting on request
+ * id N might never resolve its pending call. For a batch, the result is an array of the ids
+ * that were present, and the caller emits one error object per id.
+ *
+ * Returns `null` when nothing usable can be recovered, which is the correct JSON-RPC answer
+ * for an unparseable request.
+ *
+ * @param {string|undefined|null} body
+ * @returns {any} a single id, `null`, or an array of ids
+ */
+function extractJsonRpcIds(body) {
+  if (!body || typeof body !== "string") {
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+
+  if (Array.isArray(parsed)) {
+    const ids = parsed
+      .map((message) => (message && typeof message === "object" ? message.id : undefined))
+      .filter((id) => id !== undefined && id !== null);
+    return ids.length ? ids : null;
+  }
+
+  if (parsed && typeof parsed === "object" && parsed.id !== undefined && parsed.id !== null) {
+    return parsed.id;
+  }
+
+  return null;
 }
 
 // --- CORS Helper ---
@@ -2229,7 +2430,112 @@ function validateOrigin(req) {
   return true;
 }
 
-async function handleRequest(req, res) {
+// --- Host safety -------------------------------------------------------------
+
+/**
+ * Parses the `Host` request header without ever throwing.
+ *
+ * Why this exists (finding ★C2): the baseline built the request URL as
+ * `new URL(req.url, \`http://${req.headers.host}\`)`. A malformed `Host` (for example
+ * `Host: [bad`) made the `URL` constructor throw `ERR_INVALID_URL` inside an `async`
+ * handler, outside any `try`/`catch`. The resulting unhandled rejection terminated the
+ * process, so anyone able to reach the port could kill the proxy with a single packet.
+ *
+ * The routing code only ever reads `url.pathname` and `url.searchParams`, never the host,
+ * so the URL is now built from a constant base and the `Host` header is validated here,
+ * on its own terms.
+ *
+ * Policy note: this function only rejects values that are *not valid hosts*. Which hosts
+ * are *acceptable* (the allow-list that prevents DNS rebinding) is the security model
+ * owned by Phase 5 and deliberately not changed here.
+ *
+ * @param {import("http").IncomingMessage} req
+ * @returns {{ host: string|null, reason: string|null }} `reason` is non-null when the header
+ *   is malformed; `host` is null when the request legitimately has no `Host` (HTTP/1.0).
+ */
+function parseHostHeader(req) {
+  const rawHost = req.headers.host;
+
+  // HTTP/1.0 clients may omit `Host`. Node accepts such requests, and so do we.
+  if (rawHost === undefined || rawHost === null || rawHost === "") {
+    return { host: null, reason: null };
+  }
+
+  if (Array.isArray(rawHost)) {
+    return { host: null, reason: "duplicate Host header" };
+  }
+
+  const value = String(rawHost).trim();
+  if (!value) {
+    return { host: null, reason: null };
+  }
+
+  // A host name, optionally followed by a port; bracketed IPv6 literals are allowed.
+  // Anything with whitespace, slashes or brackets in the wrong place is rejected.
+  if (/[\s/\\@?#]/.test(value)) {
+    return { host: null, reason: "Host header contains illegal characters" };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(`http://${value}`);
+  } catch {
+    return { host: null, reason: "Host header is not a valid authority" };
+  }
+
+  if (!parsed.hostname) {
+    return { host: null, reason: "Host header has an empty host name" };
+  }
+
+  if (parsed.port !== "") {
+    const port = Number(parsed.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return { host: null, reason: "Host header has an out-of-range port" };
+    }
+  }
+
+  // `URL` silently rewrites some inputs (for example `[bad` throws, but `a b` would be
+  // escaped). Compare the round-trip so a rewritten value is treated as invalid.
+  if (parsed.host.toLowerCase() !== value.toLowerCase()) {
+    return { host: null, reason: "Host header was rewritten while parsing" };
+  }
+
+  return { host: parsed.host, reason: null };
+}
+
+/**
+ * Builds an id-aware JSON-RPC error response and sends it.
+ *
+ * The `id` is either a single id, `null`, or — for a batch — an array of per-request error
+ * objects. Every error path in the proxy funnels through here so that a client waiting on
+ * request id N always has its pending call resolved.
+ *
+ * @param {import("http").ServerResponse} res
+ * @param {number} statusCode
+ * @param {number} code
+ * @param {string} message
+ * @param {any} [id]
+ * @param {Record<string, string>} [headers]
+ */
+function sendJsonRpcError(res, statusCode, code, message, id = null, headers = {}) {
+  if (res.headersSent || res.writableEnded) {
+    return;
+  }
+
+  const payload = Array.isArray(id)
+    ? id.map((entry) => ({ jsonrpc: "2.0", error: { code, message }, id: entry }))
+    : { jsonrpc: "2.0", error: { code, message }, id };
+  const body = JSON.stringify(payload);
+
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json",
+    "Content-Length": String(Buffer.byteLength(body)),
+    ...headers,
+  });
+  res.end(body);
+}
+
+async function routeRequest(req, res) {
   // Track connection for graceful shutdown
   trackConnection(req.socket);
 
@@ -2243,13 +2549,34 @@ async function handleRequest(req, res) {
     return;
   }
 
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = new URL(req.url || "/", "http://localhost");
+
+  // --- Host validation (finding ★C2) ---
+  // Never build the URL from the Host header: a malformed value must not be able to throw.
+  const hostCheck = parseHostHeader(req);
+  if (hostCheck.reason !== null) {
+    recordMetrics({
+      method: req.method || "UNKNOWN",
+      path: url.pathname,
+      status: 400,
+      durationMs: 0,
+      isError: true,
+    });
+    return sendJsonRpcError(res, 400, -32600, `Invalid Request: ${hostCheck.reason}`, null, {
+      Connection: "close",
+    });
+  }
+
+  const isHead = req.method === "HEAD";
 
   // --- Metrics endpoint ---
-  if (METRICS_ENABLED && req.method === "GET" && url.pathname === "/metrics") {
-    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end(renderPrometheusMetrics());
-    return;
+  if (METRICS_ENABLED && (req.method === "GET" || isHead) && url.pathname === "/metrics") {
+    const body = renderPrometheusMetrics();
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Length": String(Buffer.byteLength(body)),
+    });
+    return res.end(isHead ? undefined : body);
   }
 
   if (
@@ -2280,12 +2607,15 @@ async function handleRequest(req, res) {
     return sendJson(res, 200, { access_token: "local-proxy-token" });
   }
 
-  if (req.method === "GET" && url.pathname === "/health") {
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/health") {
     const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
     const summaryLogExists = fs.existsSync(logFilePath);
     const summaryLogSizeBytes = summaryLogExists ? fs.statSync(logFilePath).size : 0;
 
-    return sendJson(res, 200, {
+    return sendJson(
+      res,
+      200,
+      {
       status: "ok",
       proxy: {
         port: Number(MCP_SERVER_PORT),
@@ -2340,15 +2670,24 @@ async function handleRequest(req, res) {
         rateLimitedTotal: state.metrics.rateLimitedTotal,
         uptimeSeconds: Math.floor((Date.now() - state.metrics.startTime) / 1000),
       },
-      timestamp: new Date().toISOString(),
-    });
+        timestamp: new Date().toISOString(),
+      },
+      { head: isHead },
+    );
   }
 
-  if (req.method === "GET" && url.pathname === "/instructions") {
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/instructions") {
     try {
       const markdown = readInstructionsMarkdown();
       const data = parseInstructionsMarkdown(markdown);
       const accept = req.headers.accept || "";
+
+      if (isHead) {
+        // `HEAD` exists so that container/runtime healthchecks (BusyBox `wget --spider`,
+        // Docker `HEALTHCHECK`) work. Body must be empty; the status is what matters.
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        return res.end();
+      }
 
       if (accept.includes("application/json")) {
         return sendJson(res, 200, data);
@@ -2425,6 +2764,10 @@ async function handleRequest(req, res) {
     const requestLogId = generateRequestLogId();
     // Declared here so the catch block can tell a client disconnect from a real failure.
     let clientDisconnected = false;
+    // Declared here so every error path, including the catch block, can echo the JSON-RPC id
+    // that the client is waiting on (finding P2).
+    /** @type {any} */
+    let requestIds = null;
 
     // --- Method guard (MCP Streamable HTTP spec) ---
     // Stitch only implements POST. Forwarding GET/DELETE/PUT upstream returns a
@@ -2476,11 +2819,8 @@ async function handleRequest(req, res) {
     // --- Origin validation (MCP spec requirement) ---
     if (!validateOrigin(req)) {
       state.metrics.rateLimitedTotal += 1;
-      return sendJson(res, 403, {
-        jsonrpc: "2.0",
-        error: { code: -32001, message: "Invalid Origin header" },
-        id: null,
-      });
+      // The spec explicitly permits a JSON-RPC error *without* an id for a rejected Origin.
+      return sendJsonRpcError(res, 403, -32001, "Invalid Origin header", null);
     }
 
     // --- Rate limiting ---
@@ -2488,16 +2828,57 @@ async function handleRequest(req, res) {
     const rateLimitResult = checkRateLimit(clientIp);
     if (!rateLimitResult.allowed) {
       state.metrics.rateLimitedTotal += 1;
-      res.setHeader("Retry-After", String(rateLimitResult.retryAfter));
-      return sendJson(res, 429, {
-        jsonrpc: "2.0",
-        error: { code: -32002, message: "Rate limit exceeded. Please retry." },
-        id: null,
-      });
+      // Read a bounded prefix of the body purely so the 429 can echo the request id.
+      const limited = await readRequestBody(req, MAX_BODY_SIZE_BYTES);
+      return sendJsonRpcError(
+        res,
+        429,
+        -32002,
+        "Rate limit exceeded. Please retry.",
+        extractJsonRpcIds(limited.body),
+        { "Retry-After": String(rateLimitResult.retryAfter) },
+      );
     }
 
     try {
-      // Accept credentials from request headers or fallback to env
+      const timestamp = new Date().toISOString();
+
+      // --- Read the request body FIRST, with a hard size limit (findings P2 and N2) ---
+      // The baseline checked credentials before reading the body, which meant the size limit
+      // was unreachable for unauthenticated callers, and every error path hard-coded
+      // `id: null` so clients could not resolve their pending call. Reading first is bounded
+      // (`readRequestBody` stops at the limit) and lets every response echo the request id.
+      const {
+        body,
+        tooLarge: bodyTooLarge,
+        readBytes,
+      } = await readRequestBody(req, MAX_BODY_SIZE_BYTES);
+
+      requestIds = extractJsonRpcIds(body);
+
+      if (bodyTooLarge) {
+        recordMetrics({
+          method: req.method || "UNKNOWN",
+          path: url.pathname,
+          status: 413,
+          durationMs: Date.now() - requestStartedAt,
+          isError: true,
+        });
+        appendSummaryLog(
+          `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 413 - DURATION_MS: ${
+            Date.now() - requestStartedAt
+          } - ERROR: body too large (read ${readBytes}, max ${MAX_BODY_SIZE_BYTES})\n`,
+        );
+        return sendJsonRpcError(
+          res,
+          413,
+          -32003,
+          `Request body too large (max ${MAX_BODY_SIZE_BYTES} bytes)`,
+          requestIds,
+        );
+      }
+
+      // --- Credentials: request headers or env fallback ---
       let apiKey = STITCH_API_KEY;
       // Headers never override the project ID by design (see commit c125891); the
       // per-request project ID lives in `params.arguments.projectId` instead.
@@ -2512,8 +2893,7 @@ async function handleRequest(req, res) {
       }
 
       if (req.headers.authorization) {
-        const { apiKey: headerApiKey } =
-          parseAuthHeader(req.headers.authorization);
+        const { apiKey: headerApiKey } = parseAuthHeader(req.headers.authorization);
         apiKey = headerApiKey || apiKey;
       }
 
@@ -2528,51 +2908,35 @@ async function handleRequest(req, res) {
       const gcloudFallbackEnabled = process.env.ENABLE_GCLOUD_FALLBACK === "1";
 
       if (!apiKey && !gcloudFallbackEnabled) {
-        return sendJson(res, 401, {
-          jsonrpc: "2.0",
-          error: {
-            code: -32007,
-            message:
-              "Missing API key. Configure mcp.json headers.STITCH_API_KEY or set STITCH_API_KEY",
-          },
-          id: null,
+        recordMetrics({
+          method: req.method || "UNKNOWN",
+          path: url.pathname,
+          status: 401,
+          durationMs: Date.now() - requestStartedAt,
+          isError: true,
         });
+        return sendJsonRpcError(
+          res,
+          401,
+          -32007,
+          "Missing API key. Configure mcp.json headers.STITCH_API_KEY or set STITCH_API_KEY",
+          requestIds,
+        );
       }
 
-      if (!projectId) {
-        console.warn("⚠️ No project ID configured. Tools that require a project may fail.");
+      // Warn once per process instead of on every request (finding N7).
+      if (!projectId && !state.warnings.noProjectId) {
+        state.warnings.noProjectId = true;
+        console.warn(
+          "⚠️ No project ID configured. Tools that require a project may fail. " +
+            "Set STITCH_PROJECT_ID or pass projectId in the tool arguments.",
+        );
       }
 
       let token = null;
       if (!apiKey && gcloudFallbackEnabled && req.method !== "GET") {
         token = getCachedToken();
       }
-
-      const timestamp = new Date().toISOString();
-
-      // --- Read request body with size limit ---
-      const bodyChunks = [];
-      let bodySize = 0;
-
-      if (req.method !== "GET" && req.method !== "HEAD") {
-        for await (const chunk of req) {
-          bodySize += chunk.length;
-          if (bodySize > MAX_BODY_SIZE_BYTES) {
-            res.writeHead(413, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32003, message: `Request body too large (max ${MAX_BODY_SIZE_BYTES} bytes)` },
-              id: null,
-            }));
-            return;
-          }
-          bodyChunks.push(chunk);
-        }
-      }
-
-      const body = bodyChunks.length
-        ? Buffer.concat(bodyChunks).toString("utf8")
-        : undefined;
 
       // --- Local fallback for methods Stitch does not implement ---
       // Avoids the upstream HTTP/2 stream reset that clients see as "fetch failed".
@@ -2693,11 +3057,15 @@ async function handleRequest(req, res) {
 
       // --- Stream or buffer response ---
       if (isStreamingResponse && response.body) {
-        // SSE/Streaming: pipe chunks as they arrive
+        // SSE/Streaming: pipe chunks as they arrive.
+        // The spec recommends `X-Accel-Buffering: no` so reverse proxies do not hold SSE
+        // events back, and the upstream's MCP headers (session, retry) must survive.
         res.writeHead(response.status, {
+          ...buildForwardResponseHeaders(response.headers),
           "Content-Type": contentType,
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
         });
 
         const streamChunks = [];
@@ -2798,9 +3166,16 @@ async function handleRequest(req, res) {
           responseBody: text,
         });
 
-        return sendText(res, response.status, text, {
-          "Content-Type": contentType || "application/json",
-        });
+        return sendText(
+          res,
+          response.status,
+          text,
+          {
+            ...buildForwardResponseHeaders(response.headers),
+            "Content-Type": contentType || "application/json",
+          },
+          { head: isHead },
+        );
       }
     } catch (error) {
       const durationMs = Date.now() - requestStartedAt;
@@ -2859,33 +3234,75 @@ async function handleRequest(req, res) {
       }
 
       if (isTimeout) {
-        return sendJson(res, 504, {
-          jsonrpc: "2.0",
-          error: {
-            code: -32004,
-            message: `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`,
-          },
-          id: null,
-        });
+        return sendJsonRpcError(
+          res,
+          504,
+          -32004,
+          `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`,
+          requestIds,
+        );
       }
 
       // Always answer with a JSON-RPC error object so MCP clients can parse it.
-      return sendJson(res, 502, {
-        jsonrpc: "2.0",
-        error: {
-          code: -32006,
-          message: `Upstream request to Stitch failed: ${errorDetail}`,
-        },
-        id: null,
-      });
+      return sendJsonRpcError(
+        res,
+        502,
+        -32006,
+        `Upstream request to Stitch failed: ${errorDetail}`,
+        requestIds,
+      );
     }
   }
 
-  return sendJson(res, 404, {
-    jsonrpc: "2.0",
-    error: { code: -32601, message: `Not found: ${req.method} ${url.pathname}` },
-    id: null,
-  });
+  return sendJsonRpcError(
+    res,
+    404,
+    -32601,
+    `Not found: ${req.method} ${url.pathname}`,
+    null,
+  );
+}
+
+// --- Request safety wrapper ---------------------------------------------------
+
+/**
+ * Crash-proof entry point for every request (finding ★C2).
+ *
+ * The router (`routeRequest`) is a large `async` function with many awaits. A single
+ * unexpected throw anywhere in it would otherwise become an unhandled rejection, which
+ * terminates the Node process — the baseline was killable with one packet carrying a
+ * malformed `Host` header.
+ *
+ * This wrapper guarantees three things:
+ *   1. no throw can escape into the event loop,
+ *   2. the client always receives a well-formed JSON-RPC error (`-32603`, Internal error),
+ *   3. the proxy keeps serving subsequent requests.
+ *
+ * @param {import("http").IncomingMessage} req
+ * @param {import("http").ServerResponse} res
+ * @returns {Promise<void>}
+ */
+async function handleRequest(req, res) {
+  try {
+    await routeRequest(req, res);
+  } catch (error) {
+    const detail = describeFetchError(error);
+    console.error("❌ Unhandled error while handling a request:", detail);
+
+    if (res.headersSent || res.writableEnded) {
+      // The response was already partly written; the only safe move is to end it so the
+      // client sees a truncated response rather than hanging until its own timeout.
+      res.end();
+      return;
+    }
+
+    try {
+      sendJsonRpcError(res, 500, -32603, `Internal error: ${detail}`);
+    } catch (sendError) {
+      console.error("❌ Failed to send the internal-error response:", describeFetchError(sendError));
+      res.destroy();
+    }
+  }
 }
 
 // --- Server factory ----------------------------------------------------------
@@ -2909,23 +3326,47 @@ function createProxyServer(options = {}) {
   state = createState(resolved);
 
   const server = http.createServer((req, res) => {
+    // `handleRequest` never rejects; the extra guard is defensive only.
     handleRequest(req, res).catch((error) => {
-      // Defensive: `handleRequest` has its own error handling, but a failure there must
-      // never surface as an unhandled rejection (which would terminate the process).
-      console.error("❌ Unhandled error in request handler:", error);
-      if (!res.headersSent && !res.writableEnded) {
-        try {
-          sendJson(res, 500, {
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal error" },
-            id: null,
-          });
-        } catch {
-          res.destroy();
-        }
+      console.error("❌ Unhandled rejection from handleRequest:", error);
+      try {
+        res.destroy();
+      } catch {
+        /* the socket is already gone */
       }
     });
   });
+
+  // Node emits `clientError` when a peer sends something that is not a valid HTTP request
+  // (bad request line, bad headers, malformed chunked encoding). The default behaviour is to
+  // write a bare `400 Bad Request`; we answer consistently instead. `ECONNRESET` means the
+  // peer already left, so there is nothing to send.
+  server.on("clientError", (error, socket) => {
+    if (/** @type {any} */ (error).code === "ECONNRESET" || !socket.writable) {
+      socket.destroy();
+      return;
+    }
+
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      error: { code: -32600, message: "Invalid Request: malformed HTTP request" },
+      id: null,
+    });
+
+    try {
+      socket.end(
+        `HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(
+          body,
+        )}\r\nConnection: close\r\n\r\n${body}`,
+      );
+    } catch {
+      socket.destroy();
+    }
+  });
+
+  // NOTE: explicit `requestTimeout` / `headersTimeout` / `keepAliveTimeout` values and a
+  // concurrency cap belong to finding ★S6 (Phase 4). Only `clientError` handling, which is
+  // part of crash-proofing, is done here.
 
   // Expose the instance state for tests and graceful shutdown without widening the
   // `http.Server` type for every consumer.
