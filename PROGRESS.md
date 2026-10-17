@@ -9,8 +9,8 @@
 
 | Field | Value |
 |---|---|
-| Phase | **0 — Baseline, packaging and harness** ✅ complete (pending commit) |
-| Step | 0.6 — ready to commit |
+| Phase | **1 — Crash-proofing and correctness** (started) |
+| Step | 1.1 — ★C2 crash-proofing |
 | Status | All gates green: `npm test` 43 pass / 27 todo / 0 fail, `npm run lint` clean, `npm run typecheck` clean, `./run.sh` starts + `/health` 200 + clean SIGTERM |
 | Started | 2026-10-17 |
 
@@ -18,14 +18,16 @@
 
 | Field | Value |
 |---|---|
-| SHA | _none yet on this branch_ (baseline `2578c26` is green by definition: no tooling existed) |
-| test | n/a |
-| lint | n/a |
-| typecheck | n/a |
+| SHA | **`920b4ee`** — `chore: add packaging, test harness and the in-process server seam (phase 0)` |
+| test | 43 pass / 27 todo / 0 fail (70 tests) |
+| lint | clean |
+| typecheck | clean |
+| verify | `npm run verify` exits 0 |
+| run.sh | starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit |
 
 ## 3. Phase checklist
 
-- [x] **Phase 0** — Baseline, packaging and harness
+- [x] **Phase 0** — Baseline, packaging and harness — ✅ `920b4ee`
 - [ ] **Phase 1** — Crash-proofing and correctness
 - [ ] **Phase 2** — Modularize (pure refactor)
 - [ ] **Phase 3** — Idempotency, retry safety and duplicate suppression
