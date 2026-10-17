@@ -9,17 +9,17 @@
 
 | Field | Value |
 |---|---|
-| Phase | **1 — Crash-proofing and correctness** — most items done, see below |
-| Step | 1.1–1.5 landed in `dfd243c`. Remaining: 1.6 (logging correctness: ★N5/★N6) and 1.7 (`test.sh` key leak, ★N8) |
-| Status | Gates green: 89 tests → **70 pass / 19 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
+| Phase | **1 — Crash-proofing and correctness** ✅ complete |
+| Step | **Phase 2 — Modularize (pure refactor)** starting |
+| Status | Gates green: 97 tests → **81 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
 | Started | 2026-10-17 |
 
 ## 2. Last green commit
 
 | Field | Value |
 |---|---|
-| SHA | **`dfd243c`** — `fix: crash-proof the request path and correct MCP header/id handling (phase 1)` |
-| test | 70 pass / 19 todo / 0 fail (89 tests) |
+| SHA | **`78cccf8`** — `fix: attribute logs to the project in use and stop leaking the API key (phase 1b)` |
+| test | 81 pass / 16 todo / 0 fail (97 tests) |
 | lint | clean |
 | typecheck | clean |
 | verify | `npm run verify` exits 0 |
@@ -28,7 +28,7 @@
 ## 3. Phase checklist
 
 - [x] **Phase 0** — Baseline, packaging and harness — ✅ `920b4ee`
-- [ ] **Phase 1** — Crash-proofing and correctness
+- [x] **Phase 1** — Crash-proofing and correctness — ✅ `dfd243c` + `78cccf8`
 - [ ] **Phase 2** — Modularize (pure refactor)
 - [ ] **Phase 3** — Idempotency, retry safety and duplicate suppression
 - [ ] **Phase 4** — Streaming and upstream I/O
@@ -431,34 +431,61 @@ Deliberate behaviour changes (all recorded):
 
 ---
 
-## 15. Next action (exact, for a fresh session)
+## 15. Phase 1b — what landed (`78cccf8`)
 
-> **Phase 1, remaining items: 1.6 (logging correctness) and 1.7 (`test.sh`).** All work in
-> `hardening/v1`; each item is `promote its ★ todo to a real test` → `fix` →
-> `npm run verify` → `commit`.
+| Finding | Status | Fix | Tests |
+|---|---|---|---|
+| ★N5 per-project debug logs misattributed | **fixed** | `extractProjectIdFromBody()`; log attribution uses `arguments.projectId`; upstream header source deliberately unchanged | 5 |
+| ★N6 error-path debug log lost the body | **fixed** | `requestBody` and the resolved log project ID hoisted out of the `try` so the `catch` can see them | 3 |
+| ★N8 `test.sh` printed the API key | **fixed** | prints `api key: configured`/`missing`; guarded by a static scan **and** a functional sentinel-key run | 3 |
+
+### Phase 1 summary
+
+Seven findings fixed: **★C2, ★S4, ★N3, ★P2, ★N2, ★P1, ★N7** (`dfd243c`) and
+**★N5, ★N6, ★N8** (`78cccf8`). The proxy can no longer be killed by malformed input, MCP
+headers survive in both directions, every error echoes the JSON-RPC id, and no credential is
+written to a log or a terminal.
+
+---
+
+## 16. Next action (exact, for a fresh session)
+
+> **Phase 2 — Modularize (pure refactor).** No behaviour change is permitted. Each area moves
+> in its own commit, and the only permitted test edit is an import path.
 >
-> 1. **★N5 — per-project debug logs use the wrong project ID.** `writeDetailedDebugLog` is
->    called with `projectId` = `DEFAULT_STITCH_PROJECT_ID`, so nearly everything lands in
->    `logs/unknown-project/`. Extract the ID actually used from
->    `params.arguments.projectId` (a new helper, e.g. `extractProjectIdFromBody(body)`), and
->    fall back to the env default. Test: a `tools/call` with `arguments.projectId` writes into
->    a directory named after that ID.
-> 2. **★N6 — the error-path debug log loses the request body.** In the `catch` block,
->    `writeDetailedDebugLog` is called with `requestBody: undefined`, so the requests you most
->    need to debug have no body. Pass the already-read `body` (it is in scope) and a real
->    timestamp. Test: a 502 with debug logging on writes a detail file containing the body.
-> 3. **★N8 — `test.sh` prints the API key.** Replace
->    `echo "Testing … with API key ${STITCH_API_KEY} and project ID …"` with a
->    `configured`/`missing` indication so keys never reach terminals or CI logs. Also switch
->    its health check to tolerate `HEAD`, and keep it the opt-in live smoke test
->    (`STITCH_LIVE=1`, never run by `npm test`).
-> 4. Confirm `docs`/`PROGRESS.md` are updated and the two remaining Phase-1 items are ticked.
+> 1. `sequential-thinking` + `architect` → write `docs/adr/0002-module-layout.md` fixing the
+>    layout below, then create `src/` and move code area by area.
+> 2. Target layout (Phase 2 subset — only what exists today moves; Phase 3+ modules are added
+>    later):
+>    - `index.js` — entry point: load config, `createProxyServer`, `listen`, signals
+>    - `src/config.js` — `applyConfig`/`resolveConfigFromEnv`/`assignConfig`/`getConfig`,
+>      `CONFIG_KEYS`, parse helpers, `.env` loader
+>    - `src/state.js` — `createState`, the `state` pointer
+>    - `src/http/respond.js` — `sendJson`/`sendText`/`sendHtml`/`sendJsonRpcError`, escaping
+>    - `src/http/security.js` — `parseHostHeader`, `validateOrigin`, `setCorsHeaders`,
+>      `redactHeaders`
+>    - `src/http/ratelimit.js` — token bucket, `getClientIp`
+>    - `src/mcp/jsonrpc.js` — `parseJsonRpcMetadata`, `extractJsonRpcIds`,
+>      `extractProjectIdFromBody`, `buildLocalFallbackResponse`
+>    - `src/upstream/forward.js` — `buildForwardHeaders`, `buildForwardResponseHeaders`,
+>      header allow-lists, `readRequestBody`
+>    - `src/upstream/errors.js` — `describeFetchError`, `isTransientUpstreamError`
+>    - `src/upstream/credentials.js` — `parseAuthHeader`, gcloud token cache
+>    - `src/observability/metrics.js` — `recordMetrics`, `renderPrometheusMetrics`
+>    - `src/observability/logger.js` — log rotation, `appendSummaryLog`,
+>      `writeDetailedDebugLog`, `normalizeBodyForLogging`, duration classification
+>    - `src/routes/*.js` — `health`, `instructions`, `logs`, `wellknown`
+>    - `src/views/instructions.html.js`, `src/views/logs.html.js` — templates moved verbatim
+>    - `src/server.js` — `handleRequest`, `routeRequest`, `createProxyServer`
+> 3. **The point of Phase 2 for the test suite:** move configuration off module-level bindings
+>    and onto the per-instance `state`/config object, so tests can run several
+>    differently-configured proxies in one process. That removes the "only the last created
+>    proxy's configuration is active" limitation recorded in §13 and lets `startProxy()` serve
+>    every test in a file. Verify by adding a test that starts two proxies with different
+>    `CORS_ORIGIN` values in the same process and asserts both behave independently.
+> 4. Keep `index.js` as the documented entry point (`node index.js`, Docker, systemd, `run.sh`
+>    all depend on it).
 >
-> Phase 1 gate: all Phase-1 ★ tests pass, characterization tests consistent, then commit
-> `fix: attribute debug logs to the right project and stop leaking the API key (phase 1b)`.
->
-> **Then Phase 2 — modularize (pure refactor).** `sequential-thinking` + `architect` →
-> `docs/adr/0002-module-layout.md`, then move code mechanically into the `src/` tree one area
-> per commit, with zero test edits other than import paths. Phase 2 is what removes the
-> module-level `state` limitation noted in §13, which in turn lets the test suite run several
-> differently-configured proxies in one process.
+> Phase 2 gate: `npm run verify` green with **zero test edits other than import paths**, plus
+> the new two-proxy isolation test. Commit per area
+> (`refactor: extract the http response helpers (phase 2)` etc.).
