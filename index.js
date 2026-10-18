@@ -3,6 +3,9 @@ const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 
+/** Reported by `/health` and used in the startup banner. Keep in step with package.json. */
+const VERSION = "0.9.0";
+
 const { describeFetchError, isTransientUpstreamError, sleep } = require("./src/upstream/errors.js");
 const {
   parseJsonRpcMetadata,
@@ -26,9 +29,14 @@ const {
 } = require("./src/http/respond.js");
 const {
   setCorsHeaders: setCorsHeadersWith,
-  validateOrigin: validateOriginWith,
   parseHostHeader: parseHostHeaderFrom,
+  evaluateOrigin,
+  evaluateHost,
+  setHtmlSecurityHeaders,
+  isLoopbackAddress,
+  isPrivateAddress,
   redactHeaders,
+  redactUrl,
 } = require("./src/http/security.js");
 const {
   getClientIp,
@@ -132,6 +140,10 @@ let SERVER_HEADERS_TIMEOUT_MS;
 let SERVER_KEEP_ALIVE_TIMEOUT_MS;
 let MAX_CONCURRENT_UPSTREAM;
 let CONCURRENCY_QUEUE_WAIT_MS;
+let ALLOWED_ORIGINS_CSV;
+let ALLOWED_HOSTS_CSV;
+let ALLOW_ALL_HOSTS;
+let TRUST_PROXY;
 
 function parseBoolean(value, fallback) {
   return String(value === undefined || value === null ? fallback : value).toLowerCase() === "true";
@@ -201,6 +213,10 @@ const CONFIG_KEYS = [
   "SERVER_KEEP_ALIVE_TIMEOUT_MS",
   "MAX_CONCURRENT_UPSTREAM",
   "CONCURRENCY_QUEUE_WAIT_MS",
+  "ALLOWED_ORIGINS_CSV",
+  "ALLOWED_HOSTS_CSV",
+  "ALLOW_ALL_HOSTS",
+  "TRUST_PROXY",
 ];
 
 /**
@@ -346,6 +362,10 @@ const configTargets = (() => {
     () => CONCURRENCY_QUEUE_WAIT_MS,
     (v) => (CONCURRENCY_QUEUE_WAIT_MS = v),
   );
+  define("ALLOWED_ORIGINS_CSV", () => ALLOWED_ORIGINS_CSV, (v) => (ALLOWED_ORIGINS_CSV = v));
+  define("ALLOWED_HOSTS_CSV", () => ALLOWED_HOSTS_CSV, (v) => (ALLOWED_HOSTS_CSV = v));
+  define("ALLOW_ALL_HOSTS", () => ALLOW_ALL_HOSTS, (v) => (ALLOW_ALL_HOSTS = v));
+  define("TRUST_PROXY", () => TRUST_PROXY, (v) => (TRUST_PROXY = v));
 
   return targets;
 })();
@@ -401,7 +421,9 @@ function resolveConfigFromEnv(env) {
     RATE_LIMIT_BURST: parseInteger(env.RATE_LIMIT_BURST, 20),
 
     // --- CORS ---
-    CORS_ORIGIN: env.CORS_ORIGIN || "*",
+    // Owner decision: LAN computers must work, the public internet must not. The default is
+    // therefore "no wildcard, private-network origins only"; CORS_ORIGIN=* opts back in.
+    CORS_ORIGIN: env.CORS_ORIGIN || "",
 
     // --- Metrics ---
     METRICS_ENABLED: parseBoolean(env.METRICS_ENABLED, "true"),
@@ -443,6 +465,16 @@ function resolveConfigFromEnv(env) {
     MAX_CONCURRENT_UPSTREAM: parseInteger(env.MAX_CONCURRENT_UPSTREAM, 32),
     // How long a request may wait for an upstream slot before answering 503 + Retry-After.
     CONCURRENCY_QUEUE_WAIT_MS: parseInteger(env.CONCURRENCY_QUEUE_WAIT_MS, 10000),
+
+    // --- Security (ADR 0005). Owner decisions: LAN access stays open, the public internet does
+    // not get in, and no proxy auth token is required. ---
+    // Extra origins beyond the private-network default; '*' restores the old permissive mode.
+    ALLOWED_ORIGINS_CSV: parseCsvSet(env.ALLOWED_ORIGINS, ""),
+    ALLOWED_HOSTS_CSV: parseCsvSet(env.ALLOWED_HOSTS, ""),
+    // Escape hatch for a reverse proxy that presents a public Host header.
+    ALLOW_ALL_HOSTS: String(env.ALLOWED_HOSTS || "").trim() === "*",
+    // Only trust X-Forwarded-For from a reverse proxy you control (finding ★N4).
+    TRUST_PROXY: parseBoolean(env.TRUST_PROXY, "false"),
   };
 }
 
@@ -963,7 +995,8 @@ function writeDetailedDebugLog({
       `durationClass: ${durationClass ?? ""}`,
       `method: ${req.method}`,
       `path: ${url.pathname}`,
-      `query: ${url.search || ""}`,
+      // Credentials can arrive as query parameters on a misconfigured client (★P1/redaction).
+      `query: ${redactUrl(url.search || "")}`,
       `projectId: ${projectId || "unknown"}`,
       "",
       "requestHeaders:",
@@ -2150,15 +2183,97 @@ async function readRequestBody(req, maxBytes) {
   };
 }
 
+/** @param {string|undefined} rawUrl @returns {boolean} */
+function isMcpPath(rawUrl) {
+  return typeof rawUrl === "string" && (rawUrl === "/mcp" || rawUrl.startsWith("/mcp?"));
+}
+
+/**
+ * Routes whose payloads contain user content and configuration. Reachable from the LAN (the
+ * owner's deployment) but not from the public internet, and never cross-origin.
+ *
+ * @param {string} pathname
+ * @returns {boolean}
+ */
+function isSensitivePath(pathname) {
+  return (
+    pathname === "/logs" ||
+    pathname === "/api/logs" ||
+    pathname.startsWith("/api/logs/") ||
+    pathname === "/metrics" ||
+    pathname === "/health"
+  );
+}
+
+/**
+ * Every log-viewer route, including the raw file reader (finding ★N1).
+ *
+ * @param {string} pathname
+ * @returns {boolean}
+ */
+function isLogViewerPath(pathname) {
+  return pathname === "/logs" || pathname === "/api/logs" || pathname.startsWith("/api/logs/");
+}
+
+/**
+ * Is the caller on the local network?
+ *
+ * `X-Forwarded-For` is only consulted when `TRUST_PROXY` is on (finding ★N4): otherwise any
+ * client could claim to be `127.0.0.1` and read the log viewer. When it *is* trusted, the
+ * left-most entry is used, as a reverse proxy writes its own address last.
+ *
+ * @param {import("http").IncomingMessage} req
+ * @returns {boolean}
+ */
+function isLocalClient(req) {
+  // Behind a reverse proxy the peer is always the proxy, so the forwarded client address must be
+  // the one that decides. Trusting the socket address first would mark every proxied request as
+  // local and hand the log viewer to the internet.
+  if (TRUST_PROXY) {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (forwarded) {
+      const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+      const client = value.split(",")[0].trim();
+      return isLoopbackAddress(client) || isPrivateAddress(client);
+    }
+  }
+
+  const remote = req.socket.remoteAddress || "";
+  return isLoopbackAddress(remote) || isPrivateAddress(remote);
+}
+
 async function routeRequest(req, res) {
   // Track connection for graceful shutdown
   trackConnection(req.socket);
 
-  // Set CORS headers on all responses
-  setCorsHeadersWith(res, req, CORS_ORIGIN);
+  // --- Origin and Host policy (ADR 0005) ---------------------------------------------
+  // Owner decisions: the proxy stays on 0.0.0.0 so other LAN machines can use it, and origins
+  // must accept LAN computers. The model is therefore "private network allowed, public internet
+  // refused" — *not* "loopback only", which would break the owner's setup.
+  const originDecision = evaluateOrigin(req.headers.origin, {
+    corsOrigin: CORS_ORIGIN,
+    allowedOrigins: ALLOWED_ORIGINS_CSV,
+  });
 
-  // Handle CORS preflight
+  // CORS is scoped to /mcp only. The log viewer, the logs API, metrics and health must never
+  // advertise CORS to a browser (finding ★C4).
+  res.setHeader("Vary", "Origin");
+  if (isMcpPath(req.url)) {
+    setCorsHeadersWith(res, req, originDecision, { wildcard: CORS_ORIGIN === "*" });
+  }
+
+  // Handle CORS preflight on /mcp.
+  if (req.method === "OPTIONS" && isMcpPath(req.url)) {
+    if (!originDecision.allowed) {
+      return sendJsonRpcError(res, 403, -32001, "Invalid Origin header", null);
+    }
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (req.method === "OPTIONS") {
+    // No CORS for non-MCP routes; answer plainly so a client is not left hanging.
     res.writeHead(204);
     res.end();
     return;
@@ -2193,7 +2308,44 @@ async function routeRequest(req, res) {
     });
   }
 
+  // DNS-rebinding control: only private/LAN host names are accepted (ADR 0005). A malicious
+  // public page can point its domain at a LAN address, and the browser then sends
+  // `Host: evil.example` to this machine; refusing public hosts closes that path.
+  const hostDecision = evaluateHost(req, {
+    allowedHosts: ALLOWED_HOSTS_CSV,
+    allowAll: ALLOW_ALL_HOSTS,
+  });
+  if (!hostDecision.allowed) {
+    recordMetrics(state.metrics, {
+      method: req.method || "UNKNOWN",
+      path: "/",
+      status: 403,
+      durationMs: 0,
+      isError: true,
+    });
+    return sendJsonRpcError(res, 403, -32001, `Invalid Host header: ${hostDecision.reason}`, null, {
+      Connection: "close",
+    });
+  }
+
   const isHead = req.method === "HEAD";
+
+  // Findings ★C4/★N1: the viewer, the logs API, metrics and verbose health expose full
+  // request/response bodies (prompts, designs, project IDs) and configuration. They are
+  // readable from the LAN — that is the owner's deployment — but never from the public
+  // internet, and never cross-origin (no CORS is emitted for them above).
+  //
+  // Placed before routing on purpose: `/metrics` is served near the top of the router, so a
+  // guard next to the log-viewer routes would leave it exposed.
+  if (isSensitivePath(url.pathname) && !isLocalClient(req)) {
+    return sendJsonRpcError(
+      res,
+      403,
+      -32001,
+      "This endpoint is only available from the local network",
+      null,
+    );
+  }
 
   // --- Metrics endpoint ---
   if (METRICS_ENABLED && (req.method === "GET" || isHead) && url.pathname === "/metrics") {
@@ -2234,6 +2386,24 @@ async function routeRequest(req, res) {
   }
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/health") {
+    // ★C4: the public payload is deliberately tiny. It used to reveal absolute paths, the full
+    // configuration and whether an API key was configured — useful reconnaissance, and a health
+    // check needs none of it.
+    const verbose = url.searchParams.get("verbose") === "1" && isLocalClient(req);
+
+    if (!verbose) {
+      return sendJson(
+        res,
+        200,
+        {
+          status: "ok",
+          version: VERSION,
+          uptime: Math.floor((Date.now() - state.metrics.startTime) / 1000),
+        },
+        { head: isHead },
+      );
+    }
+
     const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
     const summaryLogExists = fs.existsSync(logFilePath);
     const summaryLogSizeBytes = summaryLogExists ? fs.statSync(logFilePath).size : 0;
@@ -2325,6 +2495,7 @@ async function routeRequest(req, res) {
         });
       }
 
+      setHtmlSecurityHeaders(res);
       return sendHtml(res, 200, renderInstructionsHtml(data));
     } catch (error) {
       return sendJson(res, 500, {
@@ -2336,11 +2507,14 @@ async function routeRequest(req, res) {
 
   // --- Log Viewer Endpoints ---
 
-  if (!LOG_VIEWER_ENABLED && url.pathname.startsWith("/logs")) {
+  // ★N1: the guard used to be `startsWith("/logs")`, which never matched `/api/logs`. Every
+  // viewer route must honour LOG_VIEWER_ENABLED, including the raw file reader.
+  if (!LOG_VIEWER_ENABLED && isLogViewerPath(url.pathname)) {
     return sendJson(res, 404, { error: "Log viewer is disabled" });
   }
 
   if (req.method === "GET" && url.pathname === "/logs") {
+    setHtmlSecurityHeaders(res);
     return sendHtml(res, 200, renderLogsHtml());
   }
 
@@ -2452,14 +2626,23 @@ async function routeRequest(req, res) {
     }
 
     // --- Origin validation (MCP spec requirement) ---
-    if (!validateOriginWith(req, CORS_ORIGIN)) {
+    if (!originDecision.allowed) {
       state.metrics.rateLimitedTotal += 1;
       // The spec explicitly permits a JSON-RPC error *without* an id for a rejected Origin.
-      return sendJsonRpcError(res, 403, -32001, "Invalid Origin header", null);
+      return sendJsonRpcError(
+        res,
+        403,
+        -32001,
+        `Invalid Origin header: ${originDecision.reason}`,
+        null,
+      );
     }
 
     // --- Rate limiting ---
-    const clientIp = getClientIp(req);
+    // ★N4: `X-Forwarded-For` is only meaningful when a reverse proxy you control sets it.
+    // Trusting it unconditionally let any client present a fresh address per request and bypass
+    // the limit entirely.
+    const clientIp = TRUST_PROXY ? getClientIp(req) : req.socket.remoteAddress || "unknown";
     const rateLimitResult = checkRateLimitFor(
       state.rateLimitBuckets,
       { enabled: RATE_LIMIT_ENABLED, maxRps: RATE_LIMIT_MAX_RPS, burst: RATE_LIMIT_BURST },
@@ -2539,6 +2722,21 @@ async function routeRequest(req, res) {
       if (req.headers.authorization) {
         const { apiKey: headerApiKey } = parseAuthHeader(req.headers.authorization);
         apiKey = headerApiKey || apiKey;
+      }
+
+      // Defence in depth for the env key: a request that *supplies* its own credential is always
+      // fine, and an origin the policy already allows (private network, per the owner's decision)
+      // may use the env fallback. This guard exists so a future relaxation of the origin policy
+      // cannot silently let a public website spend the server's own Stitch key.
+      const credentialCameFromEnv = apiKey === STITCH_API_KEY && Boolean(STITCH_API_KEY);
+      if (credentialCameFromEnv && req.headers.origin && !originDecision.allowed) {
+        return sendJsonRpcError(
+          res,
+          403,
+          -32001,
+          "Invalid Origin header: a public origin may not use the proxy's configured API key",
+          requestIds,
+        );
       }
 
       // For security, do not allow API key in query params or body, only header or env var
@@ -3705,7 +3903,7 @@ module.exports = {
   handleRequest,
   // Exported for tests and for Phase 1+ work; not part of the public HTTP contract.
   buildLocalFallbackResponse: buildLocalFallbackResponseFor,
-  validateOrigin: validateOriginWith,
+  validateOrigin: (req, corsOrigin) => evaluateOrigin(req.headers.origin, { corsOrigin }).allowed,
   setCorsHeaders: setCorsHeadersWith,
   parseHostHeader: parseHostHeaderFrom,
   parseAuthHeader,

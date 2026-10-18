@@ -1386,7 +1386,12 @@ test("orphan: a failed detached generation is not stored", async (t) => {
 
 test("orphan: a SAFE call is aborted on client disconnect instead of detached", async (t) => {
   const upstream = await startFakeStitch({ type: "hang" });
-  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  // A short deadline so the assertion does not have to wait the default 120 s.
+  const proxy = await startProxy({
+    STITCH_URL: upstream.url,
+    STITCH_API_KEY: "env-key",
+    REQUEST_TIMEOUT_MS: 500,
+  });
   t.after(() => upstream.close());
   t.after(() => proxy.stop());
 

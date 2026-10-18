@@ -145,11 +145,12 @@ test("★C2 – a malformed Host on the log-viewer route does not crash", async 
   );
   assert.equal(badPort.status, 400, `an out-of-range port must be rejected, got ${badPort.status}`);
 
-  // A well-formed Host on the log route must still be served normally (no accidental
-  // tightening of host policy in Phase 1 — the allow-list belongs to Phase 5).
+  // A well-formed private-network Host must still be served normally. (Phase 5 added the public
+  // internet to the refusal list, so this uses a LAN address: `evil.example` is now correctly
+  // rejected as a DNS-rebinding attempt.)
   const okHost = await rawRequest(
     proxy.port,
-    "GET /api/logs HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n",
+    "GET /api/logs HTTP/1.1\r\nHost: 192.168.1.20\r\nConnection: close\r\n\r\n",
   );
   assert.equal(okHost.status, 200, `a valid Host must still be served, got ${okHost.status}`);
 
@@ -614,15 +615,20 @@ test("★C2 – legitimate Host values are still accepted after Host validation"
   const proxy = await startProxy({ STITCH_API_KEY: "env-key" });
   t.after(() => proxy.stop());
 
+  // Phase 5 changed the *policy* (public hosts are refused, ADR 0005) but not the *parser*.
+  // These are the forms a LAN deployment actually sends, including the normalisations that once
+  // broke: a case-folded name and an elided default port.
   for (const host of [
     "localhost",
     "localhost:8787",
+    "LOCALHOST",
     "127.0.0.1:11401",
-    "EXAMPLE.com",
-    "Host.Example:8080",
-    "example.com:80",
-    "example.com:443",
+    "192.168.178.94:11401",
+    "MY-LAPTOP.local",
+    "192.168.1.20:80",
     "[::1]:80",
+    "[fd00::1]:11401",
+    "latitude",
   ]) {
     const response = await rawRequest(
       proxy.port,

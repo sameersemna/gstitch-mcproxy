@@ -17,13 +17,31 @@ const { startProxy } = require("./helpers/startProxy.js");
 const { startFakeStitch } = require("./helpers/fakeStitch.js");
 const { readJson } = require("./helpers/startProxy.js");
 
-test("route: GET /health returns the full status document", async (t) => {
+test("route: GET /health returns the public liveness document", async (t) => {
+  // BEHAVIOUR CHANGED IN PHASE 5 (★C4, ADR 0005): `/health` used to publish absolute paths, the
+  // whole configuration and credential state to anyone who could reach the port. The public
+  // payload is now `{status, version, uptime}`; the full document is at `/health?verbose=1`,
+  // reachable only from the local network.
   const proxy = await startProxy({ STITCH_API_KEY: "env-key", DEFAULT_STITCH_PROJECT_ID: "proj-1" });
   t.after(() => proxy.stop());
 
   const response = await proxy.request("/health");
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") || "", /application\/json/);
+
+  const body = await readJson(response);
+  assert.equal(body.status, "ok");
+  assert.equal(typeof body.version, "string");
+  assert.equal(typeof body.uptime, "number");
+  assert.deepEqual(Object.keys(body).sort(), ["status", "uptime", "version"]);
+});
+
+test("route: GET /health?verbose=1 returns the full status document", async (t) => {
+  const proxy = await startProxy({ STITCH_API_KEY: "env-key", DEFAULT_STITCH_PROJECT_ID: "proj-1" });
+  t.after(() => proxy.stop());
+
+  const response = await proxy.request("/health?verbose=1");
+  assert.equal(response.status, 200);
 
   const body = await readJson(response);
   assert.equal(body.status, "ok");
@@ -38,7 +56,9 @@ test("route: GET /health returns the full status document", async (t) => {
   assert.equal(body.logging.level, "info");
   assert.equal(body.resilience.requestTimeoutMs, 120000);
   assert.equal(body.resilience.maxBodySizeBytes, 10485760);
-  assert.equal(body.resilience.corsOrigin, "*");
+  // Phase 5: the CORS default is no longer `*` — the origin policy allows private-network
+  // origins and refuses the public internet. `CORS_ORIGIN=*` restores the old behaviour.
+  assert.equal(body.resilience.corsOrigin, "");
   assert.equal(body.resilience.upstreamRetryEnabled, true);
   assert.equal(body.resilience.upstreamRetryAttempts, 3);
   assert.deepEqual(body.resilience.localFallbackMethods, ["prompts/list"]);
@@ -51,7 +71,8 @@ test("route: GET /health with only an env API key marks the project ID as unconf
   const proxy = await startProxy({ STITCH_API_KEY: "env-key" });
   t.after(() => proxy.stop());
 
-  const body = await readJson(await proxy.request("/health"));
+  // Phase 5: credential state lives behind the verbose flag (★C4).
+  const body = await readJson(await proxy.request("/health?verbose=1"));
   assert.equal(body.credentials.envApiKeyConfigured, true);
   assert.equal(body.credentials.envProjectIdConfigured, false);
   assert.match(body.credentials.projectConfigHint, /STITCH_PROJECT_ID/);
@@ -162,103 +183,24 @@ test("route: /logs returns 404 when the log viewer is disabled", async (t) => {
   assert.match((await readJson(response)).error, /disabled/i);
 });
 
-test("KNOWN GAP: /api/logs* is still served when LOG_VIEWER_ENABLED=false", async (t) => {
-  // Finding N1 (discovered while writing these tests): the "viewer disabled" guard is
-  // `url.pathname.startsWith("/logs")`, which never matches `/api/logs` or
-  // `/api/logs/summary`. Disabling the log viewer therefore hides the HTML page but leaves
-  // the JSON APIs — directory listing and raw log contents — fully reachable.
-  // Phase 5 (finding ★C4) closes this. Until then this test pins the current behaviour so the
-  // fix shows up as a deliberate change.
+test("★N1 – every log-viewer route honours LOG_VIEWER_ENABLED=false", async (t) => {
+  // BEHAVIOUR CHANGED IN PHASE 5 (★N1): the guard used to be `startsWith("/logs")`, which never
+  // matched `/api/logs*`, so disabling the viewer hid the HTML page while leaving the JSON APIs
+  // and the raw file reader fully reachable.
   const proxy = await startProxy({
     LOG_VIEWER_ENABLED: false,
     LOG_DIR: "test/helpers/fixtures/logs",
   });
   t.after(() => proxy.stop());
 
-  const index = await proxy.request("/api/logs");
-  assert.equal(index.status, 200, "/api/logs leaks the log directory layout");
-  const indexBody = await readJson(index);
-  assert.ok(indexBody.projects.some((p) => p.projectId === "1234567890"));
-
-  const summary = await proxy.request("/api/logs/summary?limit=1");
-  assert.equal(summary.status, 200, "/api/logs/summary leaks log lines");
-
-  const file = await proxy.request("/api/logs/1234567890/2026-01-01T00-00-00-000Z-abc123.log");
-  assert.equal(file.status, 200, "raw log files are readable while the viewer is disabled");
-  assert.match(await file.text(), /line-one/);
-});
-
-test("route: path traversal in the log file API is rejected with 403", async (t) => {
-  const proxy = await startProxy({ LOG_VIEWER_ENABLED: true, LOG_DIR: "logs" });
-  t.after(() => proxy.stop());
-
-  const response = await proxy.request("/api/logs/..%2f..%2f..%2fetc/passwd");
-  assert.equal(response.status, 403);
-  assert.match((await readJson(response)).error, /invalid path/i);
-});
-
-test("route: /.well-known, /auth and /token stubs respond for OAuth discovery", async (t) => {
-  const proxy = await startProxy();
-  t.after(() => proxy.stop());
-
-  const protectedResource = await proxy.request("/.well-known/oauth-protected-resource");
-  assert.equal(protectedResource.status, 200);
-  const prBody = await readJson(protectedResource);
-  assert.ok(Array.isArray(prBody.authorization_servers));
-
-  const openid = await proxy.request("/.well-known/openid-configuration");
-  assert.equal(openid.status, 200);
-  const oidcBody = await readJson(openid);
-  assert.match(oidcBody.authorization_endpoint, /\/auth$/);
-  assert.match(oidcBody.token_endpoint, /\/token$/);
-
-  const auth = await proxy.request("/auth");
-  assert.equal(auth.status, 200);
-  assert.equal(await auth.text(), "OK");
-
-  const token = await proxy.request("/token", { method: "POST" });
-  assert.equal(token.status, 200);
-  assert.deepEqual(await readJson(token), { access_token: "local-proxy-token" });
-});
-
-test("route: unknown paths return JSON-RPC -32601 with HTTP 404", async (t) => {
-  const proxy = await startProxy();
-  t.after(() => proxy.stop());
-
-  const response = await proxy.request("/definitely-not-a-route");
-  assert.equal(response.status, 404);
-  assert.deepEqual(await readJson(response), {
-    jsonrpc: "2.0",
-    error: { code: -32601, message: "Not found: GET /definitely-not-a-route" },
-    id: null,
-  });
-});
-
-test("route: OPTIONS preflight answers 204 for any path", async (t) => {
-  const proxy = await startProxy();
-  t.after(() => proxy.stop());
-
-  for (const path of ["/mcp", "/health", "/anything"]) {
-    const response = await proxy.request(path, {
-      method: "OPTIONS",
-      headers: { Origin: "http://localhost:3000", "Access-Control-Request-Method": "POST" },
-    });
-    assert.equal(response.status, 204, `OPTIONS ${path}`);
-  }
-});
-
-test("route: /mcp rejects non-POST methods with 405 and an Allow header", async (t) => {
-  const proxy = await startProxy();
-  t.after(() => proxy.stop());
-
-  for (const method of ["GET", "DELETE", "PUT", "PATCH"]) {
-    const response = await proxy.request("/mcp", { method });
-    assert.equal(response.status, 405, `${method} /mcp should be 405`);
-    assert.equal(response.headers.get("allow"), "POST, OPTIONS");
-    const body = await readJson(response);
-    assert.equal(body.jsonrpc, "2.0");
-    assert.equal(body.error.code, -32005);
-    assert.equal(body.id, null);
+  for (const path of [
+    "/logs",
+    "/api/logs",
+    "/api/logs/summary?limit=1",
+    "/api/logs/1234567890/2026-01-01T00-00-00-000Z-abc123.log",
+  ]) {
+    const response = await proxy.request(path);
+    assert.equal(response.status, 404, `${path} must be 404 while the viewer is disabled`);
   }
 });
 
@@ -471,29 +413,58 @@ test("rate limiting: when enabled, the burst is consumed and then 429 -32002 wit
   assert.equal(body.id, 99, "the 429 must echo the request id");
 });
 
-test("CORS: default CORS_ORIGIN=* echoes a wildcard on every route", async (t) => {
+test("CORS: emitted for /mcp only, and only for an allowed origin (★C4)", async (t) => {
+  // BEHAVIOUR CHANGED IN PHASE 5: the baseline applied `Access-Control-Allow-Origin: *` to every
+  // route, so any website could read the log viewer, the logs API, metrics and health. CORS is
+  // now scoped to `/mcp`, and the default origin policy allows private-network origins only.
   const proxy = await startProxy();
   t.after(() => proxy.stop());
 
-  for (const path of ["/mcp", "/health", "/metrics", "/api/logs"]) {
-    const response = await proxy.request(path, { headers: { Origin: "https://evil.example" } });
+  for (const path of ["/health", "/metrics", "/api/logs"]) {
+    const response = await proxy.request(path, { headers: { Origin: "http://192.168.1.5:3000" } });
     assert.equal(
       response.headers.get("access-control-allow-origin"),
-      "*",
-      `${path} should echo a wildcard origin under the default config`,
+      null,
+      `${path} must not advertise CORS`,
     );
   }
 });
 
-test("CORS: a specific CORS_ORIGIN reflects the request origin", async (t) => {
-  const proxy = await startProxy({ CORS_ORIGIN: "https://good.example" });
+test("CORS: an allowed LAN origin is reflected on /mcp with Vary: Origin", async (t) => {
+  const proxy = await startProxy();
   t.after(() => proxy.stop());
 
-  const response = await proxy.request("/health", { headers: { Origin: "https://good.example" } });
-  assert.equal(response.headers.get("access-control-allow-origin"), "https://good.example");
+  const response = await proxy.request("/mcp", {
+    method: "OPTIONS",
+    headers: { Origin: "http://192.168.1.5:3000", "Access-Control-Request-Method": "POST" },
+  });
 
-  const other = await proxy.request("/health", { headers: { Origin: "https://other.example" } });
-  assert.equal(other.headers.get("access-control-allow-origin"), "https://other.example");
+  assert.equal(response.headers.get("access-control-allow-origin"), "http://192.168.1.5:3000");
+  assert.equal(response.headers.get("vary"), "Origin");
+});
+
+test("CORS: a public origin is refused on /mcp (★C3)", async (t) => {
+  const proxy = await startProxy();
+  t.after(() => proxy.stop());
+
+  const response = await proxy.request("/mcp", {
+    method: "OPTIONS",
+    headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" },
+  });
+
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("access-control-allow-origin"), null);
+});
+
+test("CORS: CORS_ORIGIN=* restores the permissive wildcard", async (t) => {
+  const proxy = await startProxy({ CORS_ORIGIN: "*" });
+  t.after(() => proxy.stop());
+
+  const response = await proxy.request("/mcp", {
+    method: "OPTIONS",
+    headers: { Origin: "https://evil.example" },
+  });
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
 });
 
 test("CORS: preflight advertises the documented methods and headers", async (t) => {

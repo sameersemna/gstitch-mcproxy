@@ -439,10 +439,10 @@ test("respond: sendJsonRpcError never writes twice once the response started", (
 // ---------------------------------------------------------------------------
 
 const {
-  validateOrigin,
+  evaluateOrigin,
+  originAllowedByDefault,
   parseHostHeader,
   redactHeaders,
-  setCorsHeaders,
 } = require("../src/http/security.js");
 
 /**
@@ -453,29 +453,30 @@ function fakeRequest(headers, url = "/mcp") {
   return /** @type {any} */ ({ url, headers, socket: { remoteAddress: "127.0.0.1" } });
 }
 
-test("security: validateOrigin ignores non-/mcp routes", () => {
-  assert.equal(validateOrigin(fakeRequest({ origin: "https://evil.example" }, "/health"), "*"), true);
+test("security: evaluateOrigin allows non-browser clients and LAN origins", () => {
+  assert.equal(evaluateOrigin(undefined, { corsOrigin: undefined }).allowed, true);
+  assert.equal(evaluateOrigin("http://localhost:3000", { corsOrigin: undefined }).allowed, true);
+  assert.equal(evaluateOrigin("http://192.168.1.4:8080", { corsOrigin: undefined }).allowed, true);
 });
 
-test("security: validateOrigin accepts missing Origin and localhost origins", () => {
-  assert.equal(validateOrigin(fakeRequest({}), "*"), true);
-  assert.equal(validateOrigin(fakeRequest({ origin: "http://localhost:3000" }), "*"), true);
-  assert.equal(validateOrigin(fakeRequest({ origin: "http://127.0.0.1:5173" }), "*"), true);
+test("security: a public origin is refused by default (Phase 5 ★C3)", () => {
+  // Pinned deliberately: this is the fix for the finding, not an accident.
+  assert.equal(originAllowedByDefault("https://evil.example"), false);
+  assert.equal(evaluateOrigin("https://evil.example", { corsOrigin: undefined }).allowed, false);
 });
 
-test("security: validateOrigin with '*' accepts every origin (baseline ★C3 behaviour)", () => {
-  // Pinned on purpose: Phase 5 changes this to an allow-list. When it does, this test must be
-  // updated deliberately rather than silently.
-  assert.equal(validateOrigin(fakeRequest({ origin: "https://evil.example" }), "*"), true);
+test("security: '*' restores the old permissive behaviour", () => {
+  // Pinned on purpose: this is now opt-in.
+  assert.equal(evaluateOrigin("https://evil.example", { corsOrigin: "*" }).allowed, true);
 });
 
-test("security: validateOrigin with a specific origin only accepts that origin", () => {
+test("security: a specific origin only accepts itself", () => {
   assert.equal(
-    validateOrigin(fakeRequest({ origin: "https://good.example" }), "https://good.example"),
+    evaluateOrigin("https://good.example", { corsOrigin: "https://good.example" }).allowed,
     true,
   );
   assert.equal(
-    validateOrigin(fakeRequest({ origin: "https://evil.example" }), "https://good.example"),
+    evaluateOrigin("https://evil.example", { corsOrigin: "https://good.example" }).allowed,
     false,
   );
 });
@@ -536,22 +537,6 @@ test("security: redactHeaders masks every credential header", () => {
 test("security: redactHeaders tolerates missing headers", () => {
   assert.deepEqual(redactHeaders(undefined), {});
   assert.deepEqual(redactHeaders(null), {});
-});
-
-test("security: setCorsHeaders writes the documented baseline headers", () => {
-  /** @type {Record<string, string>} */
-  const set = {};
-  const res = /** @type {any} */ ({
-    setHeader: (name, value) => {
-      set[name] = value;
-    },
-  });
-
-  setCorsHeaders(res, fakeRequest({ origin: "https://evil.example" }), "*");
-
-  assert.equal(set["Access-Control-Allow-Origin"], "*");
-  assert.equal(set["Access-Control-Allow-Methods"], "GET, POST, OPTIONS");
-  assert.equal(set["Access-Control-Max-Age"], "86400");
 });
 
 // ---------------------------------------------------------------------------
