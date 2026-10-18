@@ -4,7 +4,7 @@ const path = require("path");
 const { execSync } = require("child_process");
 
 /** Reported by `/health` and used in the startup banner. Keep in step with package.json. */
-const VERSION = "0.9.0";
+const VERSION = "1.0.0";
 
 const { describeFetchError, isTransientUpstreamError, sleep } = require("./src/upstream/errors.js");
 const {
