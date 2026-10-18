@@ -13,7 +13,24 @@ Restart=on-failure
 RestartSec=5
 Environment=HOME=__HOME_DIR__
 Environment=PATH=__HOME_DIR__/.n/bin:__HOME_DIR__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+
+# --- Hardening ------------------------------------------------------------------------------
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# The service account needs its own HOME for gcloud credentials, so ProtectHome must stay off.
+ReadWritePaths=__ROOT_DIR__/logs
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitNOFILE=4096
+MemoryMax=512M
+
+# Must exceed SHUTDOWN_DRAIN_MS (default 15s) so streams can finish.
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

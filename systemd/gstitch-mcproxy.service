@@ -11,7 +11,27 @@ Restart=on-failure
 RestartSec=5
 Environment=HOME=%h
 Environment=PATH=%h/.n/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+
+# --- Hardening ------------------------------------------------------------------------------
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# NOTE: HOME stays readable because `gcloud auth print-access-token` needs it when
+# ENABLE_GCLOUD_FALLBACK=1. See docs/adr/0005-security.md.
+# The proxy must be able to write its rotated logs; .env is read from the project root.
+ReadWritePaths=__ROOT_DIR__/logs
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The proxy needs no capabilities; it binds an unprivileged port.
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitNOFILE=4096
+MemoryMax=512M
+
+# Give in-flight generations time to finish: must exceed SHUTDOWN_DRAIN_MS (default 15s).
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target

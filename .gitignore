@@ -1,3 +1,10 @@
 .env
 logs/
 NOTES.md
+node_modules/
+coverage/
+
+# Test fixtures live under a directory literally named "logs", which the rule above would
+# otherwise exclude everywhere. Re-include them explicitly.
+!test/helpers/fixtures/logs/
+!test/helpers/fixtures/logs/**

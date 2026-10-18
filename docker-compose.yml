@@ -3,25 +3,61 @@ services:
     build: .
     container_name: gstitch-mcproxy
     restart: unless-stopped
+
+    # Owner decision 1: the proxy must stay reachable from other LAN computers, so the port is
+    # published on all interfaces. Change to "127.0.0.1:8787:8787" to restrict it to this host.
     ports:
       - "8787:8787"
+
     environment:
-      - STITCH_API_KEY=${STITCH_API_KEY}
+      # Credentials. Prefer sending X-Stitch-Api-Key per request from the MCP client.
+      - STITCH_API_KEY=${STITCH_API_KEY:-}
       - STITCH_PROJECT_ID=${STITCH_PROJECT_ID:-}
+
       - MCP_SERVER_PORT=8787
       - MCP_SERVER_HOST=0.0.0.0
+
+      # Security (ADR 0005): LAN origins are allowed, the public internet is refused.
+      # Empty means "private network only"; do not set this to * on an untrusted network.
+      - CORS_ORIGIN=${CORS_ORIGIN:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+
+      # Owner decision 5: rate limiting on, generous.
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_MAX_RPS=${RATE_LIMIT_MAX_RPS:-100}
+      - RATE_LIMIT_BURST=${RATE_LIMIT_BURST:-200}
+
+      - REQUEST_TIMEOUT_MS=${REQUEST_TIMEOUT_MS:-120000}
+      - MAX_BODY_SIZE_BYTES=${MAX_BODY_SIZE_BYTES:-10485760}
+
       - LOG_ENABLED=${LOG_ENABLED:-false}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_DIR=logs
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
-      - LOG_VIEWER_ENABLED=${LOG_VIEWER_ENABLED:-true}
-      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-false}
-      - REQUEST_TIMEOUT_MS=${REQUEST_TIMEOUT_MS:-120000}
-      - MAX_BODY_SIZE_BYTES=${MAX_BODY_SIZE_BYTES:-10485760}
+      # The log viewer exposes prompts and designs; it is LAN-only, but off is a fine default
+      # for a container that faces a network you do not fully control.
+      - LOG_VIEWER_ENABLED=${LOG_VIEWER_ENABLED:-false}
+
     volumes:
+      # Logs must be writable, so they live on a volume rather than the image layer.
       - ./logs:/app/logs
+
+    # The image has no writable state outside /app/logs.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+    security_opt:
+      - no-new-privileges:true
+
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8787/health"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3
