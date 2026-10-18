@@ -114,45 +114,95 @@ The `/logs*` disabled check happens before the viewer routes but after `/mcp` gu
 
 ---
 
-## 6. Environment-variable inventory (baseline)
+## 6. Environment-variable inventory
 
-| Var | Default in code | Type | Notes |
-|---|---|---|---|
-| `STITCH_URL` | `https://stitch.googleapis.com/mcp` | url | upstream endpoint |
-| `STITCH_API_KEY` | _unset_ | secret | env fallback credential |
-| `STITCH_PROJECT_ID` | _unset_ | string | default project id |
-| `ENABLE_GCLOUD_FALLBACK` | `0` (compared to `"1"`) | bool | gcloud token fallback |
-| `MCP_SERVER_PORT` | `8787` | int | **README/.env.example say 11401** |
-| `MCP_SERVER_HOST` | `0.0.0.0` | host | **spec says SHOULD bind loopback** |
-| `LOG_ENABLED` | `false` | bool | |
-| `LOG_LEVEL` | `info` | enum | `info` \| `debug` |
-| `LOG_DIR` | `logs` (vs `cwd`) | path | **breaks when run from another dir** |
-| `LOG_FILE_NAME` | `proxy.log` | string | |
-| `LOG_MAX_BODY_CHARS` | `20000` | int | |
-| `LOG_MAX_FILE_SIZE_BYTES` | `5242880` | int | |
-| `LOG_MAX_ROTATED_FILES` | `5` | int | |
-| `LOG_SKIP_MCP_GET` | `true` | bool | |
-| `LOG_SKIP_MCP_METHODS` | `initialize,notifications/initialized,notifications/progress,ping` | csv | |
-| `LOG_SLOW_REQUEST_MS` | `2000` | int | |
-| `LOG_VERY_SLOW_REQUEST_MS` | `5000` | int | |
-| `REQUEST_TIMEOUT_MS` | `120000` | int | headers timeout only (bug S1) |
-| `MAX_BODY_SIZE_BYTES` | `10485760` | int | |
-| `UPSTREAM_RETRY_ENABLED` | `true` | bool | |
-| `UPSTREAM_RETRY_ATTEMPTS` | `3` | int | |
-| `UPSTREAM_RETRY_BASE_DELAY_MS` | `250` | int | no jitter |
-| `LOCAL_FALLBACK_METHODS` | `prompts/list` | csv | |
-| `RATE_LIMIT_ENABLED` | `false` | bool | |
-| `RATE_LIMIT_MAX_RPS` | `10` | int | |
-| `RATE_LIMIT_BURST` | `20` | int | |
-| `CORS_ORIGIN` | `*` | origin | **`*` = allow all** |
-| `METRICS_ENABLED` | `true` | bool | |
-| `SHUTDOWN_DRAIN_MS` | `15000` | int | |
-| `LOG_VIEWER_ENABLED` | `true` | bool | |
-| `LOG_VIEWER_MAX_FILE_BYTES` | `10485760` | int | |
-| `LOG_SUMMARY_MAX_LINES` | `200` | int | |
+**Authoritative source: `index.js` (`CONFIG_KEYS` / `resolveConfigFromEnv`).** The drift test
+`test/config.test.js` fails if this table, `.env.example` and the code disagree. Defaults below
+are the Phase 5 values, which encode the owner decisions in §12.
 
-`.env.example` additionally documents nothing that the code lacks; it sets `MCP_SERVER_PORT=11401`
-and `MCP_SERVER_HOST='localhost'`, which contradicts the code defaults.
+### Server and upstream
+
+| Var | Default | Notes |
+|---|---|---|
+| `MCP_SERVER_PORT` | `8787` | `.env.example` uses `8787`; the README historically showed 11401 |
+| `MCP_SERVER_HOST` | `0.0.0.0` | **owner decision 1** — LAN reachable |
+| `STITCH_URL` | `https://stitch.googleapis.com/mcp` | |
+| `STITCH_API_KEY` | _(unset)_ | env fallback credential |
+| `STITCH_PROJECT_ID` | _(unset)_ | used for log attribution and `X-Stitch-Project-Id` |
+| `ENABLE_GCLOUD_FALLBACK` | `0` | `gcloud auth print-access-token` |
+
+### Request handling and streaming
+
+| Var | Default | Notes |
+|---|---|---|
+| `REQUEST_TIMEOUT_MS` | `120000` | upstream **headers** deadline |
+| `MAX_BODY_SIZE_BYTES` | `10485760` | enforced before the credential check (★N2) |
+| `SERVER_HEADERS_TIMEOUT_MS` | `60000` | explicit socket timeout (★S6) |
+| `SERVER_KEEP_ALIVE_TIMEOUT_MS` | `5000` | explicit socket timeout (★S6) |
+| `SHUTDOWN_DRAIN_MS` | `15000` | graceful drain budget |
+| `STREAM_IDLE_TIMEOUT_MS` | `60000` | longest silence between chunks (★S1) |
+| `STREAM_MAX_DURATION_MS` | `1800000` | absolute stream cap (★S1) |
+
+### Resilience
+
+| Var | Default | Notes |
+|---|---|---|
+| `UPSTREAM_RETRY_ENABLED` | `true` | |
+| `UPSTREAM_RETRY_ATTEMPTS` | `3` | |
+| `UPSTREAM_RETRY_BASE_DELAY_MS` | `250` | full-jitter backoff base |
+| `MAX_CONCURRENT_UPSTREAM` | `32` | 0 disables the cap (★S6) |
+| `CONCURRENCY_QUEUE_WAIT_MS` | `10000` | then `503` + `Retry-After` |
+| `LOCAL_FALLBACK_METHODS` | `prompts/list` | |
+| `SAFE_TOOLS` | _(empty)_ | extra read-only tools; overrides the built-in table |
+| `UNSAFE_TOOLS` | _(empty)_ | force tools to unsafe so they are never retried |
+
+### Idempotency (ADR 0003)
+
+| Var | Default | Notes |
+|---|---|---|
+| `UNSAFE_MAX_DURATION_MS` | `600000` | **owner decision 4** — 10 min background limit |
+| `REPLAY_WINDOW_MS` | `600000` | **owner decision 4** — 10 min replay window |
+| `REPLAY_MAX_ENTRIES` | `200` | LRU cap |
+| `REPLAY_MAX_TOTAL_BYTES` | `33554432` | byte cap |
+| `ANNOTATE_TOOLS` | `true` | inject `readOnlyHint`/`destructiveHint` into `tools/list` |
+
+### Security (ADR 0005)
+
+| Var | Default | Notes |
+|---|---|---|
+| `CORS_ORIGIN` | _(empty)_ | **owner decision 2** — no wildcard; private-network origins only. `*` opts back in |
+| `ALLOWED_ORIGINS` | _(empty)_ | extra origins beyond the private-network default |
+| `ALLOWED_HOSTS` | _(empty)_ | extra Host values; `*` accepts any Host |
+| `TRUST_PROXY` | `false` | trust `X-Forwarded-For` (★N4) |
+| `RATE_LIMIT_ENABLED` | `true` | **owner decision 5** |
+| `RATE_LIMIT_MAX_RPS` | `100` | **owner decision 5** — generous |
+| `RATE_LIMIT_BURST` | `200` | **owner decision 5** — generous |
+
+### Metrics and logging
+
+| Var | Default | Notes |
+|---|---|---|
+| `METRICS_ENABLED` | `true` | |
+| `LOG_ENABLED` | `false` | `.env.example` ships `true` for a dev box |
+| `LOG_LEVEL` | `info` | `debug` adds per-request files and stream capture |
+| `LOG_DIR` | `logs` | resolved against the process CWD (known issue) |
+| `LOG_FILE_NAME` | `proxy.log` | |
+| `LOG_MAX_BODY_CHARS` | `20000` | also caps stream capture (★S3) |
+| `LOG_MAX_FILE_SIZE_BYTES` | `5242880` | |
+| `LOG_MAX_ROTATED_FILES` | `5` | |
+| `LOG_SKIP_MCP_GET` | `true` | |
+| `LOG_SKIP_MCP_METHODS` | `initialize,notifications/initialized,notifications/progress,ping` | |
+| `LOG_SLOW_REQUEST_MS` | `2000` | |
+| `LOG_VERY_SLOW_REQUEST_MS` | `5000` | |
+| `LOG_VIEWER_ENABLED` | `true` | now covers `/api/logs*` too (★N1) |
+| `LOG_VIEWER_MAX_FILE_BYTES` | `10485760` | |
+| `LOG_SUMMARY_MAX_LINES` | `200` | |
+
+### Removed
+
+| Var | Why |
+|---|---|
+| `ALLOW_ENV_API_KEY_FOR_BROWSER` | Removed in Phase 5. The origin allow-list refuses the public internet before credentials are considered, so the knob had no remaining meaning. |
 
 ---
 

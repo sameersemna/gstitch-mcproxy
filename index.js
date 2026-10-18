@@ -416,9 +416,10 @@ function resolveConfigFromEnv(env) {
     LOCAL_FALLBACK_METHODS: parseCsvSet(env.LOCAL_FALLBACK_METHODS, "prompts/list"),
 
     // --- Rate limiting ---
-    RATE_LIMIT_ENABLED: parseBoolean(env.RATE_LIMIT_ENABLED, "false"),
-    RATE_LIMIT_MAX_RPS: parseInteger(env.RATE_LIMIT_MAX_RPS, 10),
-    RATE_LIMIT_BURST: parseInteger(env.RATE_LIMIT_BURST, 20),
+    // Owner decision 5: enabled by default with a budget that normal use never reaches.
+    RATE_LIMIT_ENABLED: parseBoolean(env.RATE_LIMIT_ENABLED, "true"),
+    RATE_LIMIT_MAX_RPS: parseInteger(env.RATE_LIMIT_MAX_RPS, 100),
+    RATE_LIMIT_BURST: parseInteger(env.RATE_LIMIT_BURST, 200),
 
     // --- CORS ---
     // Owner decision: LAN computers must work, the public internet must not. The default is
