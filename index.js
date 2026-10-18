@@ -3,6 +3,19 @@ const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 
+const { describeFetchError, isTransientUpstreamError, sleep } = require("./src/upstream/errors.js");
+const {
+  parseJsonRpcMetadata,
+  extractJsonRpcIds,
+  extractProjectIdFromBody,
+  buildLocalFallbackResponse: buildLocalFallbackResponseFor,
+} = require("./src/mcp/jsonrpc.js");
+const {
+  createMetrics,
+  recordMetrics,
+  renderPrometheusMetrics,
+} = require("./src/observability/metrics.js");
+
 function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
   if (!fs.existsSync(envPath)) {
     return;
@@ -657,28 +670,6 @@ function normalizeBodyForLogging(value, contentType) {
   return truncateText(sanitizedValue, LOG_MAX_BODY_CHARS);
 }
 
-function parseJsonRpcMetadata(body) {
-  if (!body || typeof body !== "string") {
-    return { methods: [], ids: [] };
-  }
-
-  try {
-    const parsed = JSON.parse(body);
-    const messages = Array.isArray(parsed) ? parsed : [parsed];
-
-    return {
-      methods: messages
-        .map((message) => message?.method)
-        .filter((method) => typeof method === "string" && method.length > 0),
-      ids: messages
-        .map((message) => message?.id)
-        .filter((id) => id !== undefined && id !== null),
-    };
-  } catch {
-    return { methods: [], ids: [] };
-  }
-}
-
 function shouldSkipDetailedLog({ req, url, requestBody, responseStatus }) {
   if (responseStatus >= 400) {
     return false;
@@ -722,119 +713,7 @@ function generateRequestLogId() {
 
 // --- Upstream error classification & retry helpers ---
 
-// Node's fetch() collapses every transport failure into `TypeError: fetch failed`
-// and hides the real reason in `error.cause`. Surface it so logs are actionable.
-function describeFetchError(error) {
-  if (!error) {
-    return "Unknown error";
-  }
-
-  const cause = error.cause;
-  const causeCode = cause && (cause.code || cause.errno);
-  const causeMessage = cause && cause.message;
-
-  if (causeCode || causeMessage) {
-    return `${error.message || error.name} (${causeCode || causeMessage})`;
-  }
-
-  return error.message || error.name || String(error);
-}
-
-// Transient failures are worth retrying: HTTP/2 stream resets, socket hangups,
-// DNS blips and connection resets. Timeouts and 4xx/5xx responses are not.
-function isTransientUpstreamError(error) {
-  if (!error) {
-    return false;
-  }
-
-  if (error.name === "AbortError" || error.name === "TimeoutError") {
-    return false;
-  }
-
-  const cause = error.cause || {};
-  const code = cause.code || cause.errno || "";
-  const message = `${error.message || ""} ${cause.message || ""}`;
-
-  const transientCodes = [
-    "ERR_HTTP2_STREAM_ERROR",
-    "ERR_HTTP2_STREAM_CANCEL",
-    "ERR_HTTP2_GOAWAY_SESSION",
-    "ERR_HTTP2_SESSION_ERROR",
-    "ERR_HTTP2_INVALID_SESSION",
-    "ECONNRESET",
-    "ECONNREFUSED",
-    "EPIPE",
-    "ETIMEDOUT",
-    "EAI_AGAIN",
-    "ENETUNREACH",
-    "ENETDOWN",
-    "UND_ERR_SOCKET",
-    "UND_ERR_CONNECT_TIMEOUT",
-    "UND_ERR_HEADERS_TIMEOUT",
-    "UND_ERR_BODY_TIMEOUT",
-  ];
-
-  if (transientCodes.includes(code)) {
-    return true;
-  }
-
-  return /socket hang up|other side closed|stream closed|connection reset|fetch failed/i.test(
-    message,
-  );
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // --- Local fallbacks for methods Stitch does not implement ---
-
-// Returns a JSON-RPC response object when the request can be answered locally,
-// or null when it must be forwarded upstream.
-function buildLocalFallbackResponse(requestBody) {
-  if (!requestBody || !LOCAL_FALLBACK_METHODS.size) {
-    return null;
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(requestBody);
-  } catch {
-    return null;
-  }
-
-  // Only handle single (non-batched) requests.
-  if (Array.isArray(parsed) || !parsed || typeof parsed !== "object") {
-    return null;
-  }
-
-  const { method, id } = parsed;
-  if (typeof method !== "string" || !LOCAL_FALLBACK_METHODS.has(method)) {
-    return null;
-  }
-
-  // Notifications (no id) are acknowledged with 202 and no body.
-  if (id === undefined || id === null) {
-    return { notification: true };
-  }
-
-  const emptyResults = {
-    "prompts/list": { prompts: [] },
-    "resources/list": { resources: [] },
-    "resources/templates/list": { resourceTemplates: [] },
-  };
-
-  const result = emptyResults[method];
-  if (!result) {
-    return null;
-  }
-
-  return {
-    jsonrpc: "2.0",
-    id,
-    result,
-  };
-}
 
 // --- Rate Limiter (Token Bucket) ---
 
@@ -852,17 +731,7 @@ function createState(config) {
   return {
     config: cfg,
     rateLimitBuckets: new Map(),
-    metrics: {
-      requestsTotal: 0,
-      requestsByMethod: {},
-      requestsByStatus: {},
-      latencyBuckets: { 100: 0, 500: 0, 1000: 0, 5000: 0, 30000: 0, 120000: 0, Infinity: 0 },
-      latencySumSeconds: 0,
-      errorsTotal: 0,
-      activeConnections: 0,
-      rateLimitedTotal: 0,
-      startTime: Date.now(),
-    },
+    metrics: createMetrics(),
     activeConnections: new Set(),
     tokenCache: { value: null, fetchedAt: 0 },
     isShuttingDown: false,
@@ -933,95 +802,6 @@ setInterval(() => {
     }
   }
 }, 300000).unref();
-
-function recordMetrics({ method, path, status, durationMs, isError }) {
-  const metrics = state.metrics;
-
-  metrics.requestsTotal += 1;
-
-  const methodKey = `${method} ${path}`;
-  metrics.requestsByMethod[methodKey] = (metrics.requestsByMethod[methodKey] || 0) + 1;
-
-  const statusKey = String(status);
-  metrics.requestsByStatus[statusKey] = (metrics.requestsByStatus[statusKey] || 0) + 1;
-
-  for (const boundary of Object.keys(metrics.latencyBuckets)) {
-    if (durationMs <= Number(boundary)) {
-      metrics.latencyBuckets[boundary] += 1;
-      break;
-    }
-  }
-
-  metrics.latencySumSeconds += durationMs / 1000;
-
-  if (isError) {
-    metrics.errorsTotal += 1;
-  }
-}
-
-function renderPrometheusMetrics() {
-  const metrics = state.metrics;
-  const uptime = (Date.now() - metrics.startTime) / 1000;
-  const lines = [
-    "# HELP gstitch_proxy_uptime_seconds Proxy uptime in seconds",
-    "# TYPE gstitch_proxy_uptime_seconds gauge",
-    `gstitch_proxy_uptime_seconds ${uptime}`,
-    "",
-    "# HELP gstitch_proxy_requests_total Total number of requests",
-    "# TYPE gstitch_proxy_requests_total counter",
-    `gstitch_proxy_requests_total ${metrics.requestsTotal}`,
-    "",
-    "# HELP gstitch_proxy_errors_total Total number of errors",
-    "# TYPE gstitch_proxy_errors_total counter",
-    `gstitch_proxy_errors_total ${metrics.errorsTotal}`,
-    "",
-    "# HELP gstitch_proxy_active_connections Current active connections",
-    "# TYPE gstitch_proxy_active_connections gauge",
-    `gstitch_proxy_active_connections ${metrics.activeConnections}`,
-    "",
-    "# HELP gstitch_proxy_rate_limited_total Total rate-limited requests",
-    "# TYPE gstitch_proxy_rate_limited_total counter",
-    `gstitch_proxy_rate_limited_total ${metrics.rateLimitedTotal}`,
-    "",
-    "# HELP gstitch_proxy_requests_by_method Requests by HTTP method and path",
-    "# TYPE gstitch_proxy_requests_by_method counter",
-  ];
-
-  for (const [key, value] of Object.entries(metrics.requestsByMethod)) {
-    lines.push(`gstitch_proxy_requests_by_method{method_path="${key}"} ${value}`);
-  }
-
-  lines.push(
-    "",
-    "# HELP gstitch_proxy_requests_by_status Requests by HTTP status code",
-    "# TYPE gstitch_proxy_requests_by_status counter",
-  );
-
-  for (const [key, value] of Object.entries(metrics.requestsByStatus)) {
-    lines.push(`gstitch_proxy_requests_by_status{status="${key}"} ${value}`);
-  }
-
-  lines.push(
-    "",
-    "# HELP gstitch_proxy_latency_seconds Request latency histogram",
-    "# TYPE gstitch_proxy_latency_seconds histogram",
-  );
-
-  let cumulative = 0;
-  for (const [boundary, count] of Object.entries(metrics.latencyBuckets)) {
-    cumulative += count;
-    const le = boundary === "Infinity" ? "+Inf" : (Number(boundary) / 1000).toFixed(3);
-    lines.push(`gstitch_proxy_latency_seconds_bucket{le="${le}"} ${cumulative}`);
-  }
-
-  lines.push(
-    `gstitch_proxy_latency_seconds_count ${metrics.requestsTotal}`,
-    `gstitch_proxy_latency_seconds_sum ${metrics.latencySumSeconds.toFixed(3)}`,
-    "",
-  );
-
-  return lines.join("\n") + "\n";
-}
 
 // --- Connection Tracker (for graceful shutdown) ---
 
@@ -2355,91 +2135,6 @@ async function readRequestBody(req, maxBytes) {
   };
 }
 
-/**
- * Resolves the Stitch project ID a request actually operates on, for **log attribution**.
- *
- * Finding ★N5: the debug and summary logs were keyed on `DEFAULT_STITCH_PROJECT_ID` (the env
- * default) and never looked at the ID in the tool arguments, so almost every request landed in
- * `logs/unknown-project/` and the log viewer was useless for per-project debugging.
- *
- * Note this deliberately does **not** feed the upstream `X-Stitch-Project-Id` header: supplying
- * the project ID via headers was deprecated in commit c125891, and the upstream header source
- * stays unchanged.
- *
- * @param {string|undefined|null} body
- * @returns {string|null} the project ID from the arguments, or null when absent
- */
-function extractProjectIdFromBody(body) {
-  if (!body || typeof body !== "string") {
-    return null;
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-
-  const messages = Array.isArray(parsed) ? parsed : [parsed];
-
-  for (const message of messages) {
-    const args = message?.params?.arguments;
-    if (!args || typeof args !== "object") {
-      continue;
-    }
-
-    // `projectId` is Stitch's spelling; accept `project_id` defensively for hand-written calls.
-    for (const key of ["projectId", "project_id"]) {
-      const value = args[key];
-      if (typeof value === "string" && value.trim()) {
-        return value.trim();
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Extracts the JSON-RPC `id`(s) from a request body so that error responses can echo them.
- *
- * Finding P2: every error path used to hard-code `id: null`, so a client waiting on request
- * id N might never resolve its pending call. For a batch, the result is an array of the ids
- * that were present, and the caller emits one error object per id.
- *
- * Returns `null` when nothing usable can be recovered, which is the correct JSON-RPC answer
- * for an unparseable request.
- *
- * @param {string|undefined|null} body
- * @returns {any} a single id, `null`, or an array of ids
- */
-function extractJsonRpcIds(body) {
-  if (!body || typeof body !== "string") {
-    return null;
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-
-  if (Array.isArray(parsed)) {
-    const ids = parsed
-      .map((message) => (message && typeof message === "object" ? message.id : undefined))
-      .filter((id) => id !== undefined && id !== null);
-    return ids.length ? ids : null;
-  }
-
-  if (parsed && typeof parsed === "object" && parsed.id !== undefined && parsed.id !== null) {
-    return parsed.id;
-  }
-
-  return null;
-}
-
 // --- CORS Helper ---
 
 function setCorsHeaders(res, req) {
@@ -2601,7 +2296,7 @@ async function routeRequest(req, res) {
   // Never build the URL from the Host header: a malformed value must not be able to throw.
   const hostCheck = parseHostHeader(req);
   if (hostCheck.reason !== null) {
-    recordMetrics({
+    recordMetrics(state.metrics, {
       method: req.method || "UNKNOWN",
       path: url.pathname,
       status: 400,
@@ -2617,7 +2312,7 @@ async function routeRequest(req, res) {
 
   // --- Metrics endpoint ---
   if (METRICS_ENABLED && (req.method === "GET" || isHead) && url.pathname === "/metrics") {
-    const body = renderPrometheusMetrics();
+    const body = renderPrometheusMetrics(state.metrics);
     res.writeHead(200, {
       "Content-Type": "text/plain; charset=utf-8",
       "Content-Length": String(Buffer.byteLength(body)),
@@ -2829,7 +2524,7 @@ async function routeRequest(req, res) {
 
       if (req.method === "GET") {
         // Spec: a server that offers no SSE stream MUST return 405 Method Not Allowed.
-        recordMetrics({ method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+        recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
         appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - GET /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: no SSE stream offered\n`,
         );
@@ -2843,7 +2538,7 @@ async function routeRequest(req, res) {
 
       if (req.method === "DELETE") {
         // Spec: a server MAY return 405 to indicate it does not allow session termination.
-        recordMetrics({ method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+        recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
         appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - DELETE /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: stateless, no session to terminate\n`,
         );
@@ -2855,7 +2550,7 @@ async function routeRequest(req, res) {
         });
       }
 
-      recordMetrics({ method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+      recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
       appendSummaryLog(
         `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)}\n`,
       );
@@ -2909,7 +2604,7 @@ async function routeRequest(req, res) {
       requestIds = extractJsonRpcIds(body);
 
       if (bodyTooLarge) {
-        recordMetrics({
+        recordMetrics(state.metrics, {
           method: req.method || "UNKNOWN",
           path: url.pathname,
           status: 413,
@@ -2964,7 +2659,7 @@ async function routeRequest(req, res) {
       const gcloudFallbackEnabled = process.env.ENABLE_GCLOUD_FALLBACK === "1";
 
       if (!apiKey && !gcloudFallbackEnabled) {
-        recordMetrics({
+        recordMetrics(state.metrics, {
           method: req.method || "UNKNOWN",
           path: url.pathname,
           status: 401,
@@ -2996,14 +2691,14 @@ async function routeRequest(req, res) {
 
       // --- Local fallback for methods Stitch does not implement ---
       // Avoids the upstream HTTP/2 stream reset that clients see as "fetch failed".
-      const localFallback = buildLocalFallbackResponse(body);
+      const localFallback = buildLocalFallbackResponseFor(body, LOCAL_FALLBACK_METHODS);
       if (localFallback) {
         const durationMs = Date.now() - requestStartedAt;
         const durationClass = classifyDuration(durationMs);
         const methodSummary = formatMethodsForSummary(body);
 
-        if (localFallback.notification) {
-          recordMetrics({ method: req.method, path: url.pathname, status: 202, durationMs, isError: false });
+        if ("notification" in localFallback) {
+          recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 202, durationMs, isError: false });
           appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
               apiKey ? "configured" : "none"
@@ -3014,7 +2709,7 @@ async function routeRequest(req, res) {
         }
 
         const fallbackBody = JSON.stringify(localFallback);
-        recordMetrics({ method: req.method, path: url.pathname, status: 200, durationMs, isError: false });
+        recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 200, durationMs, isError: false });
         appendSummaryLog(
           `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
             apiKey ? "configured" : "none"
@@ -3148,7 +2843,7 @@ async function routeRequest(req, res) {
         const methodSummary = formatMethodsForSummary(body);
         const fullResponseBody = Buffer.concat(streamChunks).toString("utf8");
 
-        recordMetrics({
+        recordMetrics(state.metrics, {
           method: req.method,
           path: url.pathname,
           status: response.status,
@@ -3191,7 +2886,7 @@ async function routeRequest(req, res) {
         const durationClass = classifyDuration(durationMs);
         const methodSummary = formatMethodsForSummary(body);
 
-        recordMetrics({
+        recordMetrics(state.metrics, {
           method: req.method,
           path: url.pathname,
           status: response.status,
@@ -3242,7 +2937,7 @@ async function routeRequest(req, res) {
       // Client went away mid-flight: nothing to respond to, just record it.
       if (clientDisconnected && !res.writableEnded) {
         console.warn(`⚠️ Client disconnected before upstream responded (${errorDetail})`);
-        recordMetrics({
+        recordMetrics(state.metrics, {
           method: req.method,
           path: url.pathname,
           status: 499,
@@ -3257,7 +2952,7 @@ async function routeRequest(req, res) {
 
       console.error("❌ Proxy error:", errorDetail);
 
-      recordMetrics({
+      recordMetrics(state.metrics, {
         method: req.method,
         path: url.pathname,
         status: isTimeout ? 504 : 502,
@@ -3552,7 +3247,7 @@ module.exports = {
   getState,
   handleRequest,
   // Exported for tests and for Phase 1+ work; not part of the public HTTP contract.
-  buildLocalFallbackResponse,
+  buildLocalFallbackResponse: buildLocalFallbackResponseFor,
   validateOrigin,
   setCorsHeaders,
   parseAuthHeader,
