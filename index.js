@@ -8,6 +8,7 @@ const {
   parseJsonRpcMetadata,
   extractJsonRpcIds,
   extractProjectIdFromBody,
+  rewriteJsonRpcId,
   buildLocalFallbackResponse: buildLocalFallbackResponseFor,
 } = require("./src/mcp/jsonrpc.js");
 const {
@@ -34,6 +35,9 @@ const {
   checkRateLimit: checkRateLimitFor,
   sweepRateLimitBuckets,
 } = require("./src/http/ratelimit.js");
+const { classifyRequest } = require("./src/mcp/classify.js");
+const { decideRetry } = require("./src/upstream/retry.js");
+const { createIdempotencyStore } = require("./src/idempotency/store.js");
 
 function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
   if (!fs.existsSync(envPath)) {
@@ -113,6 +117,13 @@ let SHUTDOWN_DRAIN_MS;
 let LOG_VIEWER_ENABLED;
 let LOG_VIEWER_MAX_FILE_BYTES;
 let LOG_SUMMARY_MAX_LINES;
+let UNSAFE_MAX_DURATION_MS;
+let REPLAY_WINDOW_MS;
+let REPLAY_MAX_ENTRIES;
+let REPLAY_MAX_TOTAL_BYTES;
+let ANNOTATE_TOOLS;
+let SAFE_TOOLS_CSV;
+let UNSAFE_TOOLS_CSV;
 
 function parseBoolean(value, fallback) {
   return String(value === undefined || value === null ? fallback : value).toLowerCase() === "true";
@@ -169,6 +180,13 @@ const CONFIG_KEYS = [
   "LOG_VIEWER_ENABLED",
   "LOG_VIEWER_MAX_FILE_BYTES",
   "LOG_SUMMARY_MAX_LINES",
+  "UNSAFE_MAX_DURATION_MS",
+  "REPLAY_WINDOW_MS",
+  "REPLAY_MAX_ENTRIES",
+  "REPLAY_MAX_TOTAL_BYTES",
+  "ANNOTATE_TOOLS",
+  "SAFE_TOOLS_CSV",
+  "UNSAFE_TOOLS_CSV",
 ];
 
 /**
@@ -273,6 +291,17 @@ const configTargets = (() => {
     () => LOG_SUMMARY_MAX_LINES,
     (v) => (LOG_SUMMARY_MAX_LINES = v),
   );
+  define("UNSAFE_MAX_DURATION_MS", () => UNSAFE_MAX_DURATION_MS, (v) => (UNSAFE_MAX_DURATION_MS = v));
+  define("REPLAY_WINDOW_MS", () => REPLAY_WINDOW_MS, (v) => (REPLAY_WINDOW_MS = v));
+  define("REPLAY_MAX_ENTRIES", () => REPLAY_MAX_ENTRIES, (v) => (REPLAY_MAX_ENTRIES = v));
+  define(
+    "REPLAY_MAX_TOTAL_BYTES",
+    () => REPLAY_MAX_TOTAL_BYTES,
+    (v) => (REPLAY_MAX_TOTAL_BYTES = v),
+  );
+  define("ANNOTATE_TOOLS", () => ANNOTATE_TOOLS, (v) => (ANNOTATE_TOOLS = v));
+  define("SAFE_TOOLS_CSV", () => SAFE_TOOLS_CSV, (v) => (SAFE_TOOLS_CSV = v));
+  define("UNSAFE_TOOLS_CSV", () => UNSAFE_TOOLS_CSV, (v) => (UNSAFE_TOOLS_CSV = v));
 
   return targets;
 })();
@@ -340,6 +369,20 @@ function resolveConfigFromEnv(env) {
     LOG_VIEWER_ENABLED: parseBoolean(env.LOG_VIEWER_ENABLED, "true"),
     LOG_VIEWER_MAX_FILE_BYTES: parseInteger(env.LOG_VIEWER_MAX_FILE_BYTES, 10485760),
     LOG_SUMMARY_MAX_LINES: parseInteger(env.LOG_SUMMARY_MAX_LINES, 200),
+
+    // --- Idempotency (ADR 0003) ---
+    // How long a detached unsafe request may keep running in the background after the client
+    // that started it has gone away.
+    UNSAFE_MAX_DURATION_MS: parseInteger(env.UNSAFE_MAX_DURATION_MS, 10 * 60 * 1000),
+    // How long a stored result may be replayed to a retry.
+    REPLAY_WINDOW_MS: parseInteger(env.REPLAY_WINDOW_MS, 10 * 60 * 1000),
+    REPLAY_MAX_ENTRIES: parseInteger(env.REPLAY_MAX_ENTRIES, 200),
+    REPLAY_MAX_TOTAL_BYTES: parseInteger(env.REPLAY_MAX_TOTAL_BYTES, 32 * 1024 * 1024),
+
+    // --- Tool annotations ---
+    ANNOTATE_TOOLS: parseBoolean(env.ANNOTATE_TOOLS, "true"),
+    SAFE_TOOLS_CSV: parseCsvSet(env.SAFE_TOOLS, ""),
+    UNSAFE_TOOLS_CSV: parseCsvSet(env.UNSAFE_TOOLS, ""),
   };
 }
 
@@ -740,6 +783,12 @@ function createState(config) {
     metrics: createMetrics(),
     activeConnections: new Set(),
     tokenCache: { value: null, fetchedAt: 0 },
+    // In-flight coalescing and orphaned-result replay (ADR 0003).
+    idempotency: createIdempotencyStore({
+      replayWindowMs: cfg.REPLAY_WINDOW_MS,
+      maxEntries: cfg.REPLAY_MAX_ENTRIES,
+      maxTotalBytes: cfg.REPLAY_MAX_TOTAL_BYTES,
+    }),
     isShuttingDown: false,
     /** One-shot guards so startup/first-use warnings are not repeated per request. */
     warnings: { noProjectId: false },
@@ -2287,6 +2336,10 @@ async function routeRequest(req, res) {
     let requestBody;
     /** @type {string|null|undefined} */
     let logProjectId;
+    // True when an unsafe request failed after being sent, so Stitch may have applied it.
+    let outcomeUnknown = false;
+    /** @type {any} */
+    let classification = { safe: false, requestClass: "unsafe", reason: "unclassified", method: "unknown", toolName: null };
 
     // --- Method guard (MCP Streamable HTTP spec) ---
     // Stitch only implements POST. Forwarding GET/DELETE/PUT upstream returns a
@@ -2466,6 +2519,69 @@ async function routeRequest(req, res) {
         token = getCachedToken();
       }
 
+      // --- Classify (ADR 0003) -----------------------------------------------------------
+      // `safe` vs `unsafe` decides whether a failure may be retried, whether identical
+      // concurrent calls may be coalesced, and whether a detached result may be replayed.
+      let parsedBody;
+      try {
+        parsedBody = body ? JSON.parse(body) : undefined;
+      } catch {
+        parsedBody = undefined;
+      }
+
+      classification = classifyRequest(parsedBody, {
+        safeTools: SAFE_TOOLS_CSV.size ? SAFE_TOOLS_CSV : null,
+        unsafeTools: UNSAFE_TOOLS_CSV.size ? UNSAFE_TOOLS_CSV : null,
+      });
+
+      // --- Replay of a stored result (ADR 0003) ------------------------------------------
+      // Only unsafe calls are worth replaying: a safe call is cheaper to just re-run, and
+      // replaying it would serve stale data.
+      const explicitIdempotencyKey =
+        req.headers["idempotency-key"] ||
+        parsedBody?.params?._meta?.idempotencyKey ||
+        (Array.isArray(parsedBody)
+          ? parsedBody.find((message) => message?.params?._meta?.idempotencyKey)?.params?._meta
+              ?.idempotencyKey
+          : undefined);
+
+      let fingerprint = null;
+      if (!classification.safe) {
+        fingerprint = state.idempotency.fingerprintOf({
+          apiKey,
+          method: classification.method,
+          params: parsedBody?.params,
+        });
+
+        const stored = state.idempotency.take(fingerprint, {
+          explicitKey: Boolean(explicitIdempotencyKey),
+        });
+
+        if (stored) {
+          const durationMs = Date.now() - requestStartedAt;
+          recordMetrics(state.metrics, {
+            method: req.method || "UNKNOWN",
+            path: url.pathname,
+            status: stored.status,
+            durationMs,
+            isError: stored.status >= 500,
+          });
+          appendSummaryLog(
+            `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${
+              classification.method
+            } - STATUS: ${stored.status} - DURATION_MS: ${durationMs} - REPLAYED: true\n`,
+          );
+          res.setHeader("X-Proxy-Replayed", "true");
+          return sendText(
+            res,
+            stored.status,
+            stored.body,
+            { "Content-Type": stored.contentType || "application/json" },
+            { head: isHead },
+          );
+        }
+      }
+
       // --- Local fallback for methods Stitch does not implement ---
       // Avoids the upstream HTTP/2 stream reset that clients see as "fetch failed".
       const localFallback = buildLocalFallbackResponseFor(body, LOCAL_FALLBACK_METHODS);
@@ -2533,49 +2649,108 @@ async function routeRequest(req, res) {
       };
       res.on("close", onClientClose);
 
-      let response;
-      let lastError;
       const maxAttempts = UPSTREAM_RETRY_ENABLED ? Math.max(1, UPSTREAM_RETRY_ATTEMPTS) : 1;
+      const deadlineAt = requestStartedAt + REQUEST_TIMEOUT_MS;
 
-      try {
-        upstreamInFlight = true;
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      /** @returns {Promise<Response>} */
+      const performFetch = () =>
+        fetchUpstreamWithRetry({
+          url: STITCH_URL,
+          method: req.method || "POST",
+          headers: buildForwardHeaders(req, token, apiKey, upstreamProjectId),
+          body,
+          signal: controller.signal,
+          safe: classification.safe,
+          maxAttempts,
+          baseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,
+          deadlineAt,
+          isTimedOut: () => timedOut,
+          isClientGone: () => clientDisconnected,
+          onOutcomeUnknown: () => {
+            outcomeUnknown = true;
+          },
+        });
+
+      // --- In-flight coalescing for unsafe requests (ADR 0003) ---------------------------
+      // A second identical unsafe request arriving while the first is still running must not
+      // start a second generation. It attaches to the first and receives the same result.
+      //
+      // Coalescing requires a buffered response to share, so unsafe calls are read fully before
+      // replying. Safe calls keep the streaming path untouched: they are cheap and replayable,
+      // and streaming them is what makes long reads feel responsive.
+      let coalescedResult = null;
+
+      if (fingerprint && !classification.safe) {
+        const joined = state.idempotency.join(fingerprint, async () => {
+          upstreamInFlight = true;
           try {
-            response = await fetch(STITCH_URL, {
-              method: req.method,
-              headers: buildForwardHeaders(req, token, apiKey, upstreamProjectId),
-              body,
-              signal: controller.signal,
-            });
-            lastError = undefined;
-            break;
-          } catch (fetchError) {
-            lastError = fetchError;
-
-            const canRetry =
-              attempt < maxAttempts &&
-              !timedOut &&
-              !clientDisconnected &&
-              isTransientUpstreamError(fetchError);
-
-            if (!canRetry) {
-              throw fetchError;
-            }
-
-            const delayMs = UPSTREAM_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
-            console.warn(
-              `⚠️ Upstream attempt ${attempt}/${maxAttempts} failed (${describeFetchError(fetchError)}). Retrying in ${delayMs}ms...`,
-            );
-            await sleep(delayMs);
+            const shared = await performFetch();
+            const sharedBody = await shared.text();
+            return {
+              status: shared.status,
+              body: sharedBody,
+              contentType: shared.headers.get("content-type") || "application/json",
+              headers: Object.fromEntries(shared.headers.entries()),
+            };
+          } finally {
+            upstreamInFlight = false;
+            clearTimeout(timeoutId);
           }
+        });
+
+        coalescedResult = await joined.promise;
+
+        if (joined.coalesced) {
+          appendSummaryLog(
+            `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${
+              classification.method
+            } - STATUS: ${coalescedResult.status} - COALESCED: true\n`,
+          );
+          res.setHeader("X-Proxy-Coalesced", "true");
+
+          if (coalescedResult.status < 400) {
+            state.idempotency.put(
+              fingerprint,
+              coalescedResult,
+              { explicitKey: Boolean(explicitIdempotencyKey), delivered: true },
+            );
+          }
+
+          // The shared body carries the *first* caller's JSON-RPC id; rewrite it to this
+          // caller's id so both clients can resolve their own pending call.
+          return sendText(
+            res,
+            coalescedResult.status,
+            rewriteJsonRpcId(coalescedResult.body, requestIds),
+            { "Content-Type": coalescedResult.contentType },
+            { head: isHead },
+          );
         }
-      } finally {
-        upstreamInFlight = false;
-        clearTimeout(timeoutId);
       }
 
-      if (!response) {
-        throw lastError || new Error("Upstream request failed");
+      let response;
+      if (coalescedResult) {
+        // This caller started the shared work: replay the buffered result rather than re-reading
+        // the (already consumed) upstream stream.
+        response = new Response(coalescedResult.body, {
+          status: coalescedResult.status,
+          headers: { "Content-Type": coalescedResult.contentType },
+        });
+        if (coalescedResult.status < 400) {
+          state.idempotency.put(
+            fingerprint,
+            coalescedResult,
+            { explicitKey: Boolean(explicitIdempotencyKey), delivered: true },
+          );
+        }
+      } else {
+        try {
+          upstreamInFlight = true;
+          response = await performFetch();
+        } finally {
+          upstreamInFlight = false;
+          clearTimeout(timeoutId);
+        }
       }
 
       const contentType = response.headers.get("content-type") || "";
@@ -2694,6 +2869,17 @@ async function routeRequest(req, res) {
           responseBody: text,
         });
 
+        // Store a completed unsafe result so that a retry of the identical call can replay it
+        // instead of asking Stitch to do the work again (ADR 0003). Only successful replies are
+        // stored: caching an error would make a transient failure permanent.
+        if (fingerprint && !classification.safe && response.status < 400) {
+          state.idempotency.put(
+            fingerprint,
+            { status: response.status, body: text, contentType: contentType || "application/json" },
+            { explicitKey: Boolean(explicitIdempotencyKey), delivered: true },
+          );
+        }
+
         return sendText(
           res,
           response.status,
@@ -2774,6 +2960,27 @@ async function routeRequest(req, res) {
         );
       }
 
+      // ADR 0003: an unsafe request that failed *after* it was sent may already have been
+      // applied by Stitch. Retrying it silently would duplicate the side effect, and a plain
+      // `-32006` would invite the model to try again. Answer with a dedicated code whose
+      // message tells the client exactly how to establish the truth.
+      if (outcomeUnknown && !classification.safe) {
+        appendSummaryLog(
+          `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 502 - OUTCOME_UNKNOWN: true - TOOL: ${
+            classification.toolName || classification.method
+          }\n`,
+        );
+        return sendJsonRpcError(
+          res,
+          502,
+          -32008,
+          `Outcome unknown: the request may have been applied by Stitch before the connection failed (${
+            classification.toolName || classification.method
+          }). Call list_screens or list_projects to check before retrying.`,
+          requestIds,
+        );
+      }
+
       // Always answer with a JSON-RPC error object so MCP clients can parse it.
       return sendJsonRpcError(
         res,
@@ -2792,6 +2999,104 @@ async function routeRequest(req, res) {
     `Not found: ${req.method} ${url.pathname}`,
     null,
   );
+}
+
+
+/**
+ * Performs one upstream request with the phase-aware retry policy (ADR 0003).
+ *
+ * Extracted from the router so that the streaming path and the coalesced (buffered) path cannot
+ * drift apart: if a retry rule changes, it changes for both.
+ *
+ * @param {{
+ *   url: string,
+ *   method: string,
+ *   headers: Record<string, string>,
+ *   body: string|undefined,
+ *   signal: AbortSignal,
+ *   safe: boolean,
+ *   maxAttempts: number,
+ *   baseDelayMs: number,
+ *   deadlineAt: number,
+ *   isTimedOut: () => boolean,
+ *   isClientGone: () => boolean,
+ *   onOutcomeUnknown: () => void,
+ * }} options
+ * @returns {Promise<Response>}
+ */
+async function fetchUpstreamWithRetry(options) {
+  const {
+    url,
+    method,
+    headers,
+    body,
+    signal,
+    safe,
+    maxAttempts,
+    baseDelayMs,
+    deadlineAt,
+    isTimedOut,
+    isClientGone,
+    onOutcomeUnknown,
+  } = options;
+
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const remainingMs = deadlineAt - Date.now();
+
+    try {
+      const response = await fetch(url, { method, headers, body, signal });
+
+      // --- HTTP status retry (safe requests only) ---
+      const decision = decideRetry({
+        safe,
+        attempt,
+        maxAttempts,
+        status: response.status,
+        retryAfter: response.headers.get("retry-after"),
+        remainingMs,
+        baseDelayMs,
+      });
+
+      if (decision.retry && !isTimedOut() && !isClientGone()) {
+        console.warn(
+          `\u26a0\ufe0f Upstream attempt ${attempt}/${maxAttempts} returned ${response.status} (${decision.reason}). Retrying in ${decision.delayMs}ms...`,
+        );
+        await response.arrayBuffer().catch(() => undefined);
+        await sleep(decision.delayMs);
+        continue;
+      }
+
+      return response;
+    } catch (fetchError) {
+      lastError = fetchError;
+
+      const decision = decideRetry({
+        safe,
+        attempt,
+        maxAttempts,
+        error: fetchError,
+        remainingMs,
+        baseDelayMs,
+      });
+
+      if (decision.outcomeUnknown) {
+        onOutcomeUnknown();
+      }
+
+      if (!decision.retry || isTimedOut() || isClientGone()) {
+        throw fetchError;
+      }
+
+      console.warn(
+        `\u26a0\ufe0f Upstream attempt ${attempt}/${maxAttempts} failed (${describeFetchError(fetchError)}, phase=${decision.phase}). Retrying in ${decision.delayMs}ms...`,
+      );
+      await sleep(decision.delayMs);
+    }
+  }
+
+  throw lastError || new Error("Upstream request failed");
 }
 
 // --- Request safety wrapper ---------------------------------------------------

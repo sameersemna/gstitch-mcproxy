@@ -199,10 +199,57 @@ function buildLocalFallbackResponse(requestBody, fallbackMethods) {
   };
 }
 
+/**
+ * Rewrites the JSON-RPC `id`(s) of a response body.
+ *
+ * Needed for coalescing: when two clients send the same unsafe call, only one upstream request
+ * runs, so the shared body carries the first caller's id. Every waiter must receive its **own**
+ * id back or its pending call never resolves.
+ *
+ * Only the `id` is touched — never the result — and anything that cannot be parsed is returned
+ * unchanged, because corrupting a response is worse than a mismatched id.
+ *
+ * @param {string} body
+ * @param {any} targetIds a single id, `null`, or an array of ids
+ * @returns {string}
+ */
+function rewriteJsonRpcId(body, targetIds) {
+  if (typeof body !== "string" || targetIds === null || targetIds === undefined) {
+    return body;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return body;
+  }
+
+  if (Array.isArray(parsed)) {
+    // Match by position: the proxy does not reorder batched responses.
+    const ids = Array.isArray(targetIds) ? targetIds : [targetIds];
+    const rewritten = parsed.map((message, index) => {
+      if (index < ids.length && message && typeof message === "object" && "id" in message) {
+        return { ...message, id: ids[index] };
+      }
+      return message;
+    });
+    return JSON.stringify(rewritten);
+  }
+
+  if (parsed && typeof parsed === "object" && "id" in parsed) {
+    const id = Array.isArray(targetIds) ? targetIds[0] : targetIds;
+    return JSON.stringify({ ...parsed, id });
+  }
+
+  return body;
+}
+
 module.exports = {
   parseJsonRpcMetadata,
   extractJsonRpcIds,
   extractProjectIdFromBody,
   buildLocalFallbackResponse,
+  rewriteJsonRpcId,
   EMPTY_FALLBACK_RESULTS,
 };
