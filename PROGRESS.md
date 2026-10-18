@@ -9,17 +9,17 @@
 
 | Field | Value |
 |---|---|
-| Phase | **1 — Crash-proofing and correctness** ✅ complete |
-| Step | **Phase 2 — Modularize (pure refactor)** starting |
-| Status | Gates green: 97 tests → **81 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
+| Phase | **2 — Modularize (pure refactor)**, in progress |
+| Step | 2.1 done (`errors`, `jsonrpc`, `metrics` + 24 unit tests). Next: `http/respond`, `http/security`, `http/ratelimit` |
+| Status | Gates green: 121 tests → **105 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
 | Started | 2026-10-17 |
 
 ## 2. Last green commit
 
 | Field | Value |
 |---|---|
-| SHA | **`78cccf8`** — `fix: attribute logs to the project in use and stop leaking the API key (phase 1b)` |
-| test | 81 pass / 16 todo / 0 fail (97 tests) |
+| SHA | **`6c0be4f`** — `test: unit-test the pure modules extracted in phase 2` |
+| test | 105 pass / 16 todo / 0 fail (121 tests) |
 | lint | clean |
 | typecheck | clean |
 | verify | `npm run verify` exits 0 |
@@ -29,7 +29,7 @@
 
 - [x] **Phase 0** — Baseline, packaging and harness — ✅ `920b4ee`
 - [x] **Phase 1** — Crash-proofing and correctness — ✅ `dfd243c` + `78cccf8`
-- [ ] **Phase 2** — Modularize (pure refactor)
+- [ ] **Phase 2** — Modularize (pure refactor) — in progress: `2603fa0` + `6c0be4f`
 - [ ] **Phase 3** — Idempotency, retry safety and duplicate suppression
 - [ ] **Phase 4** — Streaming and upstream I/O
 - [ ] **Phase 5** — Security model
@@ -190,7 +190,7 @@ Classification decides **retry safety**, **in-flight coalescing**, **orphan capt
 | ADR | Title | Status |
 |---|---|---|
 | [0001](docs/adr/0001-language-and-typechecking.md) | Language & type checking: keep JS + `checkJs` | **Accepted** (Phase 0) |
-| 0002 | Module layout | Phase 2 |
+| [0002](docs/adr/0002-module-layout.md) | Module layout | **Accepted** (Phase 2) |
 | 0003 | Idempotency & retry safety | Phase 3 |
 | 0004 | Streaming | Phase 4 |
 | 0005 | Security model | Phase 5 |
@@ -448,9 +448,29 @@ written to a log or a terminal.
 
 ---
 
-## 16. Next action (exact, for a fresh session)
+## 16. Phase 2 progress
 
-> **Phase 2 — Modularize (pure refactor).** No behaviour change is permitted. Each area moves
+| Module | Status | Commit |
+|---|---|---|
+| `src/upstream/errors.js` | ✅ extracted | `2603fa0` |
+| `src/mcp/jsonrpc.js` | ✅ extracted | `2603fa0` |
+| `src/observability/metrics.js` | ✅ extracted | `2603fa0` |
+| `src/unit` tests for the above | ✅ 24 tests | `6c0be4f` |
+| `src/http/respond.js` | ⬜ next | — |
+| `src/http/security.js` | ⬜ | — |
+| `src/http/ratelimit.js` | ⬜ | — |
+| `src/observability/logger.js` | ⬜ | — |
+| `src/views/*`, `src/routes/*` | ⬜ | — |
+| `src/server.js` | ⬜ | — |
+| config onto the instance (multi-proxy isolation) | ⬜ | — |
+
+`index.js`: 3,400 → 3,300 lines so far.
+
+---
+
+## 17. Next action (exact, for a fresh session)
+
+> **Phase 2 — continue the modularization.** No behaviour change is permitted. Each area moves
 > in its own commit, and the only permitted test edit is an import path.
 >
 > 1. `sequential-thinking` + `architect` → write `docs/adr/0002-module-layout.md` fixing the
