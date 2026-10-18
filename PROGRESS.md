@@ -10,7 +10,7 @@
 | Field | Value |
 |---|---|
 | Phase | **3 — Idempotency, retry safety and duplicate suppression**, in progress |
-| Step | 3.1–3.4 and 3.9 done (classification, phase-aware retry, `-32008`, coalescing, replay, annotations). Remaining: 3.5 orphan capture, 3.6 explicit-key wiring tests, 3.10 `tools/list` caching |
+| Step | 3.1–3.6 and 3.9 done. Remaining: 3.7 cancellation for safe in-flight (P5), 3.8 store hygiene metrics, 3.10 `tools/list` caching |
 | Status | Gates green: 228 tests → **212 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
 | Started | 2026-10-17 |
 
@@ -18,8 +18,8 @@
 
 | Field | Value |
 |---|---|
-| SHA | **`c42a7b9`** — `feat: annotate tools/list so clients can warn before unsafe calls (phase 3)` |
-| test | 212 pass / 16 todo / 0 fail (228 tests) |
+| SHA | **`4a4e810`** — `test: cover explicit idempotency keys end to end (phase 3)` |
+| test | 220 pass / 16 todo / 0 fail (236 tests) |
 | lint | clean |
 | typecheck | clean |
 | verify | `npm run verify` exits 0 |
@@ -284,7 +284,7 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 
 | ID | Reproduced | Evidence (actual observed output) | Regression test |
 |---|---|---|---|
-| ★C1 | ✅ **YES** | Fake upstream that resets the socket after receiving a `tools/call create_project`: upstream **received `create_project` 3 times** (`{"count":3,...}`). Client got `502 {"code":-32006,"message":"...fetch failed (ECONNRESET)"}`. | **FIXED `b96e3e7`** — 12 end-to-end tests in `test/phase3.test.js`; upstream now receives it **exactly once** and the client gets `-32008` |
+| ★C1 | ✅ **YES** (fixed) | Fake upstream that resets the socket after receiving a `tools/call create_project`: upstream **received `create_project` 3 times** (`{"count":3,...}`). Client got `502 {"code":-32006,"message":"...fetch failed (ECONNRESET)"}`. | **FIXED `b96e3e7`** — 12 end-to-end tests in `test/phase3.test.js`; upstream now receives it **exactly once** and the client gets `-32008` |
 | ★C2 | ✅ **YES** | `printf 'GET /health HTTP/1.1\r\nHost: [bad\r\n\r\n' \| nc 127.0.0.1 8799` ⇒ process **died** (`ERR_INVALID_URL`, `base: 'http://[bad'`, `Node.js v26.3.0` on stdout, port no longer listening). | **FIXED `dfd243c`** — 6 tests in `test/phase1.test.js`; verified with 50 malformed Hosts in a row |
 | ★C3 | ✅ **YES** (read path proven; write path follows from identical code) | Preflight/actual request from `Origin: https://evil.example` ⇒ `Access-Control-Allow-Origin: *`; `POST /token` with **no credentials** ⇒ `{"access_token":"local-proxy-token"}`. | → Phase 5 |
 | ★C4 | ✅ **YES** | `GET /api/logs` with `Origin: https://evil.example` ⇒ **200** + `access-control-allow-origin: *` (log dir listing, project IDs, sizes). `/health` also 200 with no auth. | → Phase 5 |
@@ -477,9 +477,9 @@ written to a log or a terminal.
 | `-32008` outcome-unknown response | ✅ `b96e3e7` | `index.js` |
 | In-flight coalescing (unsafe only) + per-waiter id rewrite | ✅ `b96e3e7` | `src/idempotency/store.js`, `rewriteJsonRpcId` |
 | Result store + replay (LRU, byte caps, TTL) | ✅ `b96e3e7` | `src/idempotency/store.js` |
-| `Idempotency-Key` / `_meta.idempotencyKey` | ✅ storage honours it; **needs explicit end-to-end tests** | |
+| `Idempotency-Key` / `_meta.idempotencyKey` | ✅ `4a4e810` (4 end-to-end tests) | |
 | `tools/list` annotation injection | ✅ `c42a7b9` | `annotateToolsList` |
-| **Orphan capture** (detach an unsafe request after client disconnect / timeout) | ⬜ next | |
+| **Orphan capture** (detach an unsafe request after client disconnect / timeout) | ✅ `7f0d3e9` (4 tests) | |
 | `notifications/cancelled` for safe in-flight requests (P5) | ⬜ | |
 | `tools/list` caching to absorb discovery storms | ⬜ | |
 | Metrics for coalesced/replayed/orphaned | ⬜ | |
