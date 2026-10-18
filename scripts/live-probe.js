@@ -3,14 +3,20 @@
 "use strict";
 
 /**
- * Opt-in live probe for finding P4 (`PROGRESS.md` §10.2).
+ * Opt-in live probe for the two questions about Stitch that no local test can answer.
  *
- * P4 asks one question: **does Stitch implement `resources/list` and
- * `resources/templates/list`?** The proxy already knows the shape of the answer for
- * `prompts/list` — Stitch resets the HTTP/2 stream and returns nothing, which clients surface as
- * `fetch failed` — and it answers that method locally. It carries empty-result entries for the
- * other two but leaves them out of `LOCAL_FALLBACK_METHODS` because nobody has verified whether
- * Stitch implements them.
+ * 1. **Does Stitch implement `resources/list` and `resources/templates/list`?** (finding P4)
+ *    The proxy knows the shape of the answer for `prompts/list` — Stitch resets the HTTP/2 stream
+ *    and returns nothing, which clients surface as `fetch failed` — and answers that method
+ *    locally. It carries empty-result entries for the other two but leaves them out of
+ *    `LOCAL_FALLBACK_METHODS` until someone verifies Stitch implements them. Verified 2026-10-18:
+ *    both are implemented (empty collections), so only `prompts/list` stays local.
+ *
+ * 2. **Does Stitch annotate its tools, and do the hints agree with the proxy's table?**
+ *    The `tools/list` annotation injection only fills in what the upstream left blank, so this
+ *    says whether clients see Stitch's hints or ours — and whether any tool is advertised as
+ *    read-only while the proxy treats it as unsafe. Verified 2026-10-18: 15/15 annotated, no
+ *    disagreements, so the injection injects nothing.
  *
  * That cannot be answered by reading code or by a fake upstream, so this script asks the real
  * endpoint. It is deliberately hard to run by accident:
@@ -30,6 +36,8 @@
  *
  * Exit codes: 0 = probe completed, 1 = could not conclude (control call failed), 2 = usage error.
  */
+
+const { annotationsForTool, classifyRequest } = require("../src/mcp/classify.js");
 
 const DEFAULT_STITCH_URL = "https://stitch.googleapis.com/mcp";
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -463,6 +471,36 @@ async function main() {
   const control = rows.find((row) => row.probe.control);
   const controlOk = control ? control.verdict.verdict === "control OK" : false;
 
+  // Second question, answered by the same call: does Stitch annotate its tools? The proxy only
+  // injects `readOnlyHint`/`destructiveHint` when the upstream did not supply them, so this says
+  // whether clients are seeing Stitch's annotations or ours.
+  const tools = control?.outcome.kind === "result" ? control.outcome.result?.tools : null;
+  const annotationSummary = Array.isArray(tools)
+    ? {
+        tools: tools.length,
+        withAnnotations: tools.filter((tool) => tool?.annotations).length,
+        withReadOnlyHint: tools.filter((tool) => tool?.annotations?.readOnlyHint !== undefined)
+          .length,
+        injectedByProxy: tools.filter(
+          (tool) =>
+            typeof tool?.name === "string" && annotationsForTool(tool.name, tool.annotations),
+        ).length,
+        // A tool Stitch calls read-only but the proxy treats as unsafe is the interesting case:
+        // clients would see no warning, while the proxy still refuses to retry it.
+        readOnlyDisagreements: tools
+          .filter(
+            (tool) =>
+              typeof tool?.name === "string" &&
+              tool.annotations?.readOnlyHint === true &&
+              !classifyRequest(
+                { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool.name } },
+                {},
+              ).safe,
+          )
+          .map((tool) => tool.name),
+      }
+    : null;
+
   if (options.json) {
     console.log(
       JSON.stringify(
@@ -472,6 +510,7 @@ async function main() {
           apiKey: "configured",
           initialize: initOutcome,
           controlOk,
+          annotations: annotationSummary,
           results: rows.map((row) => ({
             method: row.probe.method,
             control: Boolean(row.probe.control),
@@ -526,6 +565,21 @@ async function main() {
       "Check STITCH_API_KEY, network access, and whether Stitch still accepts this endpoint.",
     );
     return 1;
+  }
+
+  if (annotationSummary) {
+    console.log("— Tool annotations —");
+    console.log(
+      `${annotationSummary.withAnnotations} of ${annotationSummary.tools} tools carry annotations; ` +
+        `${annotationSummary.withReadOnlyHint} carry readOnlyHint; ` +
+        `the proxy would inject annotations for ${annotationSummary.injectedByProxy}.`,
+    );
+    if (annotationSummary.readOnlyDisagreements.length > 0) {
+      console.log(
+        `⚠️  readOnlyHint disagrees with the proxy's classification for: ${annotationSummary.readOnlyDisagreements.join(", ")}`,
+      );
+    }
+    console.log("");
   }
 
   console.log("— Verdict for P4 —");

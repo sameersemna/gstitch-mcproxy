@@ -456,6 +456,11 @@ Result of the run on 2026-10-18:
 | `resources/list`           | implemented — `200`, empty collection |
 | `resources/templates/list` | implemented — `200`, empty collection |
 
+The same call answers a second question: **Stitch annotates all 15 tools** with `readOnlyHint`, and
+every hint agrees with the proxy's classification — so the annotation injection is a fallback that
+currently injects nothing, and no client is told a mutating tool is read-only. The probe reports
+that coverage (and any disagreement) on every run.
+
 Three guards, because it spends your credential:
 
 - `--i-understand` is required; without it the script prints usage and exits `2`;

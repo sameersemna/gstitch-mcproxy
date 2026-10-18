@@ -20,6 +20,10 @@ migration notes.
   Only `prompts/list` is answered locally, which was already the default; the empty results for
   the resource methods remain available for `LOCAL_FALLBACK_METHODS` but stay off. `test/bugs.test.js`
   now asserts that default instead of carrying the finding as a `todo`.
+- **Stitch annotates every tool.** All 15 tools carry `annotations` with `readOnlyHint`, and every
+  value agrees with the proxy's classification. The `tools/list` annotation injection is therefore a
+  dormant fallback (0 tools injected) rather than the active mechanism it was assumed to be. The
+  probe now reports annotation coverage and any disagreement, so a change upstream is visible.
 
 ### Fixed — CI
 

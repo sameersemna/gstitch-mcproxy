@@ -316,6 +316,12 @@ decisions based on `ToolAnnotations` received from untrusted servers."_
 
 Display-name precedence: `title`, then `annotations.title`, then `name`.
 
+**Observed upstream (2026-10-18, `npm run probe:live -- --i-understand`):** Stitch returns **15
+tools, all 15 carrying `annotations`, all 15 with `readOnlyHint`**, and every value agrees with the
+proxy's built-in classification. Two consequences: the `tools/list` annotation injection added for
+★C1 is a **dormant fallback** today (it injects for 0 tools — it exists in case Stitch stops sending
+hints), and no client is told a mutating tool is read-only.
+
 ### Header forwarding policy for this proxy (derived)
 
 **Request → upstream (`MCP-Protocol-Version`, `Mcp-Session-Id`, `Last-Event-ID` were all dropped at baseline):**
@@ -397,10 +403,9 @@ no annotations to warn clients before unsafe calls.
 
 ## 11. Known issues / deferred
 
-| Issue                                                 | Why deferred                                                                                                |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **context7 unavailable** (`Invalid API key`)          | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored. |
-| Live `tools/list` annotations from Stitch are unknown | Classification currently relies on the built-in table; upstream annotations take precedence once observed.  |
+| Issue                                        | Why deferred                                                                                                |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **context7 unavailable** (`Invalid API key`) | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored. |
 
 ## 12. Owner decisions (answered 2026-10-18)
 
