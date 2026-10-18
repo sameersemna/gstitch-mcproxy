@@ -408,19 +408,27 @@ test("★P2 – a JSON-RPC batch gets one error object per request that has an i
 });
 
 test("★P2 – a successful response still passes the upstream body through verbatim", async (t) => {
+  // Deliberately a `tools/call` result, not `tools/list`: `tools/list` bodies are now annotated
+  // on the way back (Phase 3, ADR 0003), which is asserted in `test/phase3.test.js`. This test
+  // exists to prove the passthrough mechanism itself is transparent.
   const upstream = await startFakeStitch({
     type: "json",
-    body: { jsonrpc: "2.0", id: 5, result: { tools: [{ name: "list_projects" }] } },
+    body: { jsonrpc: "2.0", id: 5, result: { screens: [{ id: "s1", title: "Home" }] } },
   });
   const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
   t.after(() => upstream.close());
   t.after(() => proxy.stop());
 
-  const body = await proxy.postJsonForJson("/mcp", { jsonrpc: "2.0", id: 5, method: "tools/list" });
+  const body = await proxy.postJsonForJson("/mcp", {
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: { name: "list_screens" },
+  });
   assert.deepEqual(body, {
     jsonrpc: "2.0",
     id: 5,
-    result: { tools: [{ name: "list_projects" }] },
+    result: { screens: [{ id: "s1", title: "Home" }] },
   });
 });
 

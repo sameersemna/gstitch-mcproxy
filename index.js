@@ -35,7 +35,7 @@ const {
   checkRateLimit: checkRateLimitFor,
   sweepRateLimitBuckets,
 } = require("./src/http/ratelimit.js");
-const { classifyRequest } = require("./src/mcp/classify.js");
+const { classifyRequest, annotationsForTool } = require("./src/mcp/classify.js");
 const { decideRetry } = require("./src/upstream/retry.js");
 const { createIdempotencyStore } = require("./src/idempotency/store.js");
 
@@ -2833,7 +2833,19 @@ async function routeRequest(req, res) {
         return;
       } else {
         // Non-streaming: buffer and send
-        const text = await response.text();
+        const rawText = await response.text();
+
+        // --- tools/list annotation injection (ADR 0003) --------------------------------
+        // Clients use `readOnlyHint`/`destructiveHint` to warn a human before an unsafe call.
+        // Stitch does not always supply them, so the proxy fills them in from its own
+        // classification — without ever overwriting an annotation the upstream provided.
+        let text = rawText;
+        if (ANNOTATE_TOOLS && classification.method === "tools/list" && response.status === 200) {
+          text = annotateToolsList(rawText, {
+            safeTools: SAFE_TOOLS_CSV.size ? SAFE_TOOLS_CSV : null,
+            unsafeTools: UNSAFE_TOOLS_CSV.size ? UNSAFE_TOOLS_CSV : null,
+          });
+        }
         const durationMs = Date.now() - requestStartedAt;
         const durationClass = classifyDuration(durationMs);
         const methodSummary = formatMethodsForSummary(body);
@@ -3097,6 +3109,55 @@ async function fetchUpstreamWithRetry(options) {
   }
 
   throw lastError || new Error("Upstream request failed");
+}
+
+/**
+ * Adds tool annotations to a `tools/list` result body.
+ *
+ * Why: a client shows a confirmation prompt for a `destructiveHint` tool and may skip it for a
+ * `readOnlyHint` one. Stitch does not reliably annotate its tools, so without this the model gets
+ * no warning before a call that spends generation quota.
+ *
+ * Returns the body unchanged when it is not a recognisable `tools/list` result, or when nothing
+ * needed annotating.
+ *
+ * @param {string} body
+ * @param {{ safeTools?: Set<string>|null, unsafeTools?: Set<string>|null }} [options]
+ * @returns {string}
+ */
+function annotateToolsList(body, options = {}) {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return body;
+  }
+
+  const tools = parsed?.result?.tools;
+  if (!Array.isArray(tools)) {
+    return body;
+  }
+
+  let changed = false;
+  const annotated = tools.map((tool) => {
+    if (!tool || typeof tool.name !== "string") {
+      return tool;
+    }
+
+    const annotations = annotationsForTool(tool.name, tool.annotations, options);
+    if (!annotations) {
+      return tool;
+    }
+
+    changed = true;
+    return { ...tool, annotations: { ...(tool.annotations || {}), ...annotations } };
+  });
+
+  if (!changed) {
+    return body;
+  }
+
+  return JSON.stringify({ ...parsed, result: { ...parsed.result, tools: annotated } });
 }
 
 // --- Request safety wrapper ---------------------------------------------------

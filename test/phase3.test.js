@@ -1098,3 +1098,121 @@ test("coalescing: a different API key is a different operation", async (t) => {
 
   assert.equal(received, 2, "results from one credential must never be served to another");
 });
+
+// ---------------------------------------------------------------------------
+// tools/list annotation injection
+// ---------------------------------------------------------------------------
+
+/** A realistic `tools/list` result with no annotations, as Stitch returns it. */
+const TOOLS_LIST_WITHOUT_ANNOTATIONS = {
+  jsonrpc: "2.0",
+  id: 1,
+  result: {
+    tools: [
+      { name: "list_projects", description: "List projects", inputSchema: { type: "object" } },
+      { name: "create_project", description: "Create a project", inputSchema: { type: "object" } },
+      {
+        name: "generate_screen_from_text",
+        description: "Generate a screen",
+        inputSchema: { type: "object" },
+      },
+      { name: "some_future_tool", description: "Unknown", inputSchema: { type: "object" } },
+    ],
+  },
+};
+
+test("annotations: tools/list gains readOnlyHint/destructiveHint/idempotentHint", async (t) => {
+  const upstream = await startFakeStitch({ type: "json", body: TOOLS_LIST_WITHOUT_ANNOTATIONS });
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const body = await proxy.postJsonForJson("/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const byName = Object.fromEntries(body.result.tools.map((tool) => [tool.name, tool]));
+
+  assert.equal(byName.list_projects.annotations.readOnlyHint, true);
+  assert.equal(byName.list_projects.annotations.idempotentHint, true);
+
+  assert.equal(byName.create_project.annotations.readOnlyHint, false);
+  assert.equal(byName.create_project.annotations.idempotentHint, false);
+
+  assert.equal(byName.generate_screen_from_text.annotations.readOnlyHint, false);
+
+  // An unknown tool must be presented as unsafe, not silently omitted.
+  assert.equal(byName.some_future_tool.annotations.readOnlyHint, false);
+});
+
+test("annotations: upstream annotations are preserved verbatim", async (t) => {
+  const upstream = await startFakeStitch({
+    type: "json",
+    body: {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        tools: [
+          {
+            name: "create_project",
+            annotations: { title: "Create project", readOnlyHint: true, custom: "keep-me" },
+          },
+        ],
+      },
+    },
+  });
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const body = await proxy.postJsonForJson("/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const [tool] = body.result.tools;
+
+  assert.deepEqual(tool.annotations, {
+    title: "Create project",
+    readOnlyHint: true,
+    custom: "keep-me",
+  });
+});
+
+test("annotations: injection can be disabled with ANNOTATE_TOOLS=false", async (t) => {
+  const upstream = await startFakeStitch({ type: "json", body: TOOLS_LIST_WITHOUT_ANNOTATIONS });
+  const proxy = await startProxy({
+    STITCH_URL: upstream.url,
+    STITCH_API_KEY: "env-key",
+    ANNOTATE_TOOLS: false,
+  });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const body = await proxy.postJsonForJson("/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.equal(body.result.tools[0].annotations, undefined);
+});
+
+test("annotations: a non-tools/list response is untouched", async (t) => {
+  const upstream = await startFakeStitch({
+    type: "json",
+    body: { jsonrpc: "2.0", id: 1, result: { screens: [{ id: "s1" }] } },
+  });
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const body = await proxy.postJsonForJson("/mcp", {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "list_screens" },
+  });
+  assert.deepEqual(body.result, { screens: [{ id: "s1" }] });
+});
+
+test("annotations: a malformed tools/list body is returned unchanged, not corrupted", async (t) => {
+  const upstream = await startFakeStitch({
+    type: "json",
+    body: { jsonrpc: "2.0", id: 1, result: { tools: "not an array" } },
+  });
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const body = await proxy.postJsonForJson("/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.equal(body.result.tools, "not an array");
+});
