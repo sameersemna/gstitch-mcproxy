@@ -278,14 +278,14 @@ test("★N6 – a timeout (504) keeps the request body in the detail log", async
     jsonrpc: "2.0",
     id: 7,
     method: "tools/call",
-    params: { name: "generate_screen_from_text", arguments: { projectId: "to-project" } },
+    params: { name: "list_screens", arguments: { projectId: "to-project" } },
   });
   assert.equal(response.status, 504);
   assert.equal((await readJson(response)).error.code, -32004);
 
   const detail = readDetailLog(logDir, "to-project");
   assert.ok(detail !== null, "★N6: a timed-out request must produce a detail log");
-  assert.match(detail, /generate_screen_from_text/);
+  assert.match(detail, /list_screens/);
 });
 
 // ---------------------------------------------------------------------------

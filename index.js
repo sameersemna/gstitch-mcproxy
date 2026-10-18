@@ -2572,10 +2572,12 @@ async function routeRequest(req, res) {
             } - STATUS: ${stored.status} - DURATION_MS: ${durationMs} - REPLAYED: true\n`,
           );
           res.setHeader("X-Proxy-Replayed", "true");
+          // The stored body carries the *original* caller's id; the retrying client is waiting on
+          // its own id and would never resolve without this rewrite.
           return sendText(
             res,
             stored.status,
-            stored.body,
+            rewriteJsonRpcId(stored.body, requestIds),
             { "Content-Type": stored.contentType || "application/json" },
             { head: isHead },
           );
@@ -2630,22 +2632,72 @@ async function routeRequest(req, res) {
       // --- Forward request to Stitch with timeout + retry ---
       const controller = new AbortController();
       let timedOut = false;
+
+      // ADR 0003: an unsafe request must survive its client. Aborting it would stop *our* read
+      // but not Stitch's work, so the generation would complete server-side with its result
+      // thrown away — and the client's retry would start a second one. An unsafe request is
+      // therefore allowed to run for `UNSAFE_MAX_DURATION_MS` in the background; the *client*
+      // still gets its answer at `REQUEST_TIMEOUT_MS`, and the eventual result is stored so the
+      // retry can reclaim it.
+      let orphaned = false;
+      const upstreamDeadlineMs = classification.safe ? REQUEST_TIMEOUT_MS : UNSAFE_MAX_DURATION_MS;
+
+      // Both timers are unref'd: a lingering one must never keep the process (or a test run)
+      // alive after the request it belongs to has finished.
       const timeoutId = setTimeout(() => {
         timedOut = true;
-        controller.abort();
+        if (classification.safe) {
+          controller.abort();
+        } else {
+          orphaned = true;
+          state.idempotency.recordOrphan();
+        }
       }, REQUEST_TIMEOUT_MS);
+      timeoutId.unref?.();
 
-      // Abort the upstream request if the client goes away, so we stop paying for
-      // work nobody is waiting for. The listener stays attached for the whole
-      // request so a late disconnect is still detected.
+      const abortId = setTimeout(() => {
+        controller.abort();
+      }, upstreamDeadlineMs);
+      abortId.unref?.();
+
+      /** Clears both of this request's timers. Safe to call more than once. */
+      const clearRequestTimers = () => {
+        clearTimeout(timeoutId);
+        clearTimeout(abortId);
+      };
+
+      /**
+       * Clears only the *response* deadline. When a request is detached, the upstream keeps
+       * running and `abortId` is the detached request's own safety limit, so it must survive.
+       */
+      const clearResponseTimer = () => {
+        clearTimeout(timeoutId);
+      };
+
       let upstreamInFlight = false;
       const onClientClose = () => {
-        if (!res.writableEnded) {
-          clientDisconnected = true;
+        if (res.writableEnded) {
+          return;
+        }
+        clientDisconnected = true;
+
+        if (classification.safe) {
+          // Nothing is lost by aborting a read-only call; the client can simply ask again.
           if (upstreamInFlight) {
             controller.abort();
           }
+          return;
         }
+
+        // Unsafe: detach instead of abort. The upstream keeps running and its result is stored
+        // for the retry (orphan capture).
+        orphaned = true;
+        state.idempotency.recordOrphan();
+        appendSummaryLog(
+          `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 499 - DETACHED: true - TOOL: ${
+            classification.toolName || classification.method
+          }\n`,
+        );
       };
       res.on("close", onClientClose);
 
@@ -2695,12 +2747,96 @@ async function routeRequest(req, res) {
           } finally {
             upstreamInFlight = false;
             clearTimeout(timeoutId);
+            clearTimeout(abortId);
           }
         });
 
-        coalescedResult = await joined.promise;
+        // The client must get an answer at REQUEST_TIMEOUT_MS even though the upstream is allowed
+        // to keep running (orphan capture). So race the shared work against a response deadline:
+        // whoever wins decides what this handler does. The upstream promise keeps running either
+        // way and stores its own result.
+        const deadline = new Promise((resolve) => {
+          setTimeout(() => resolve(ORPHAN_SENTINEL), REQUEST_TIMEOUT_MS).unref?.();
+        });
+
+        const raced = await Promise.race([joined.promise, deadline]);
+
+        if (raced === ORPHAN_SENTINEL) {
+          clearResponseTimer();
+          orphaned = true;
+          state.idempotency.recordOrphan();
+
+          // Attach the storage work to the still-running upstream request. This must never
+          // reject: it runs after the client is gone.
+          joined.promise
+            .then((late) => {
+              if (late.status < 400) {
+                state.idempotency.put(
+                  fingerprint,
+                  late,
+                  { explicitKey: Boolean(explicitIdempotencyKey), delivered: false },
+                );
+              }
+              appendSummaryLog(
+                `${new Date().toISOString()} - ID: ${requestLogId} - ${classification.method} - ORPHAN_FINISHED: true - STATUS: ${late.status}\n`,
+              );
+            })
+            .catch((lateError) => {
+              appendSummaryLog(
+                `${new Date().toISOString()} - ID: ${requestLogId} - ${classification.method} - ORPHAN_FAILED: ${describeFetchError(lateError)}\n`,
+              );
+            });
+
+          recordMetrics(state.metrics, {
+            method: req.method || "UNKNOWN",
+            path: url.pathname,
+            status: 504,
+            durationMs: Date.now() - requestStartedAt,
+            isError: true,
+          });
+
+          return sendJsonRpcError(
+            res,
+            504,
+            -32004,
+            `Upstream request is still running after ${REQUEST_TIMEOUT_MS}ms (${
+              classification.toolName || classification.method
+            }). It was not cancelled: retry the identical call to collect its result.`,
+            requestIds,
+          );
+        }
+
+        coalescedResult = raced;
+
+        if (orphaned) {
+          clearRequestTimers();
+          if (coalescedResult.status < 400) {
+            state.idempotency.put(
+              fingerprint,
+              coalescedResult,
+              { explicitKey: Boolean(explicitIdempotencyKey), delivered: false },
+            );
+          }
+          recordMetrics(state.metrics, {
+            method: req.method || "UNKNOWN",
+            path: url.pathname,
+            status: 499,
+            durationMs: Date.now() - requestStartedAt,
+            isError: false,
+          });
+          appendSummaryLog(
+            `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 499 - ORPHAN_STORED: ${
+              coalescedResult.status < 400
+            } - TOOL: ${classification.toolName || classification.method}\n`,
+          );
+          console.warn(
+            `⚠️ Detached unsafe request ${classification.toolName || classification.method} finished after the client left (status ${coalescedResult.status}); result stored for replay.`,
+          );
+          return;
+        }
 
         if (joined.coalesced) {
+          clearRequestTimers();
           appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${
               classification.method
@@ -3159,6 +3295,9 @@ function annotateToolsList(body, options = {}) {
 
   return JSON.stringify({ ...parsed, result: { ...parsed.result, tools: annotated } });
 }
+
+/** Distinguishes "the response deadline won" from a real upstream result. */
+const ORPHAN_SENTINEL = Symbol("orphan-deadline");
 
 // --- Request safety wrapper ---------------------------------------------------
 

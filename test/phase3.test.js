@@ -1216,3 +1216,203 @@ test("annotations: a malformed tools/list body is returned unchanged, not corrup
   const body = await proxy.postJsonForJson("/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" });
   assert.equal(body.result.tools, "not an array");
 });
+
+// ---------------------------------------------------------------------------
+// Orphan capture (ADR 0003 §5)
+// ---------------------------------------------------------------------------
+
+const net = require("node:net");
+
+/**
+ * Starts a fake upstream that answers an unsafe call only when released, so a test can make the
+ * client leave while the "generation" is still running.
+ *
+ * @returns {Promise<{ url: string, received: () => number, release: () => void, close: () => Promise<void> }>}
+ */
+async function startSlowUnsafeUpstream() {
+  const http = require("node:http");
+  let received = 0;
+  /** @type {Array<() => void>} */
+  const pending = [];
+
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      received += 1;
+      const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      pending.push(() => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: parsed.id,
+            result: { created: "from-orphan", tool: parsed?.params?.name },
+          }),
+        );
+      });
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+
+  return {
+    url: `http://127.0.0.1:${/** @type {any} */ (server.address()).port}/mcp`,
+    received: () => received,
+    release: () => {
+      for (const finish of pending.splice(0)) {
+        finish();
+      }
+    },
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve(undefined));
+      }),
+  };
+}
+
+test("orphan: a client disconnect does not duplicate the generation on retry", async (t) => {
+  const upstream = await startSlowUnsafeUpstream();
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const payload = {
+    jsonrpc: "2.0",
+    id: 500,
+    method: "tools/call",
+    params: { name: "generate_screen_from_text", arguments: { prompt: "orphan me" } },
+  };
+
+  // Send a request over a raw socket so the client can vanish mid-flight.
+  const socket = net.connect({ port: proxy.port, host: "127.0.0.1" });
+  await new Promise((resolve) => socket.on("connect", resolve));
+  const body = JSON.stringify(payload);
+  socket.write(
+    `POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+  );
+
+  // Let the proxy forward it, then walk away.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(upstream.received(), 1, "the upstream should have the request");
+  socket.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // The generation finishes *after* the client has gone: the result must be captured.
+  upstream.release();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  // The identical retry must NOT start a second generation.
+  const retry = await proxy.postJson("/mcp", { ...payload, id: 501 });
+  assert.equal(retry.status, 200, "the retry should be answered from the stored result");
+  assert.equal(upstream.received(), 1, "orphan capture must prevent a second generation");
+
+  const retryBody = await readJson(retry);
+  assert.equal(retryBody.id, 501, "the retry gets its own id");
+  assert.equal(retryBody.result.created, "from-orphan", "and the original result");
+  assert.equal(retry.headers.get("x-proxy-replayed"), "true");
+});
+
+test("orphan: an unsafe timeout keeps running and a retry collects the result", async (t) => {
+  const upstream = await startSlowUnsafeUpstream();
+  const proxy = await startProxy({
+    STITCH_URL: upstream.url,
+    STITCH_API_KEY: "env-key",
+    REQUEST_TIMEOUT_MS: 120,
+    UNSAFE_MAX_DURATION_MS: 5000,
+  });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const payload = {
+    jsonrpc: "2.0",
+    id: 600,
+    method: "tools/call",
+    params: { name: "create_project", arguments: { title: "slow" } },
+  };
+
+  // The proxy answers 504 at the deadline instead of hanging.
+  const timedOut = await proxy.postJson("/mcp", payload);
+  assert.equal(timedOut.status, 504);
+  const timedOutBody = await readJson(timedOut);
+  assert.equal(timedOutBody.error.code, -32004);
+  assert.match(timedOutBody.error.message, /still running/i);
+  assert.match(timedOutBody.error.message, /retry the identical call/i);
+  assert.equal(upstream.received(), 1);
+
+  // Finish the "generation", then retry: no second upstream request, and the result is returned.
+  upstream.release();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  const retry = await proxy.postJson("/mcp", { ...payload, id: 601 });
+  assert.equal(retry.status, 200);
+  assert.equal(upstream.received(), 1, "the retry must reclaim the orphan, not regenerate");
+  assert.equal((await readJson(retry)).id, 601);
+});
+
+test("orphan: a failed detached generation is not stored", async (t) => {
+  const upstream = await startFakeStitch([
+    { type: "hang" },
+    { type: "json", body: { jsonrpc: "2.0", id: 700, result: { retried: true } } },
+  ]);
+  const proxy = await startProxy({
+    STITCH_URL: upstream.url,
+    STITCH_API_KEY: "env-key",
+    REQUEST_TIMEOUT_MS: 100,
+    UNSAFE_MAX_DURATION_MS: 200,
+  });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const payload = {
+    jsonrpc: "2.0",
+    id: 700,
+    method: "tools/call",
+    params: { name: "create_project", arguments: { title: "fails" } },
+  };
+
+  const timedOut = await proxy.postJson("/mcp", payload);
+  assert.equal(timedOut.status, 504);
+
+  // Give the detached request time to hit its own deadline and fail.
+  await new Promise((resolve) => setTimeout(resolve, 350));
+
+  const retry = await proxy.postJson("/mcp", { ...payload, id: 701 });
+  assert.equal(retry.status, 200, "a failed orphan must not be replayed; the retry runs for real");
+  assert.equal((await readJson(retry)).result.retried, true);
+  assert.equal(upstream.count(), 2, "one attempt for the orphan, one for the retry");
+});
+
+test("orphan: a SAFE call is aborted on client disconnect instead of detached", async (t) => {
+  const upstream = await startFakeStitch({ type: "hang" });
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const socket = net.connect({ port: proxy.port, host: "127.0.0.1" });
+  await new Promise((resolve) => socket.on("connect", resolve));
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 800,
+    method: "tools/call",
+    params: { name: "list_screens", arguments: { projectId: "p" } },
+  });
+  socket.write(
+    `POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  socket.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // Read-only work is cheap: nothing is stored, so a retry goes back to the upstream.
+  const retry = await proxy.postJson("/mcp", {
+    jsonrpc: "2.0",
+    id: 801,
+    method: "tools/call",
+    params: { name: "list_screens", arguments: { projectId: "p" } },
+  });
+  assert.equal(retry.status === 504 || retry.status === 502, true, `got ${retry.status}`);
+  assert.ok(upstream.count() >= 2, "a safe retry must reach the upstream again");
+});
