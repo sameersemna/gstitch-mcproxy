@@ -7,37 +7,38 @@
 
 ## 1. Current phase / step / status
 
-| Field   | Value                                                                                                                           |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Phase   | **3 — Idempotency, retry safety and duplicate suppression**, in progress                                                        |
-| Step    | 3.1–3.6 and 3.9 done. Remaining: 3.7 cancellation for safe in-flight (P5), 3.8 store hygiene metrics, 3.10 `tools/list` caching |
-| Status  | Gates green: 228 tests → **212 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0                 |
-| Started | 2026-10-17                                                                                                                      |
+| Field   | Value                                                                                                          |
+| ------- | -------------------------------------------------------------------------------------------------------------- |
+| Phase   | **all phases complete (0–10)**                                                                                 |
+| Step    | final verification done; opening the PR is the only remaining action                                           |
+| Status  | Gates green: 303 tests → **301 pass / 2 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
+| Started | 2026-10-17                                                                                                     |
 
 ## 2. Last green commit
 
-| Field     | Value                                                                        |
-| --------- | ---------------------------------------------------------------------------- |
-| SHA       | **`4a4e810`** — `test: cover explicit idempotency keys end to end (phase 3)` |
-| test      | 220 pass / 16 todo / 0 fail (236 tests)                                      |
-| lint      | clean                                                                        |
-| typecheck | clean                                                                        |
-| verify    | `npm run verify` exits 0                                                     |
-| run.sh    | starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit                          |
+| Field     | Value                                                   |
+| --------- | ------------------------------------------------------- |
+| Branch    | `hardening/v1` (22 commits ahead of `main` @ `2578c26`) |
+| test      | 301 pass / 2 todo / 0 fail (303 tests, ~10 s)           |
+| lint      | clean                                                   |
+| typecheck | clean                                                   |
+| verify    | `npm run verify` exits 0                                |
+| coverage  | 94 % statements                                         |
+| run.sh    | starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit     |
 
 ## 3. Phase checklist
 
 - [x] **Phase 0** — Baseline, packaging and harness — ✅ `920b4ee`
 - [x] **Phase 1** — Crash-proofing and correctness — ✅ `dfd243c` + `78cccf8`
 - [x] **Phase 2** — Modularize (pure refactor) — `2603fa0` … `59957ff` (config isolation deferred to Phase 6, guarded)
-- [ ] **Phase 3** — Idempotency, retry safety and duplicate suppression — in progress: `b96e3e7` + `c42a7b9`
-- [ ] **Phase 4** — Streaming and upstream I/O
-- [ ] **Phase 5** — Security model
-- [ ] **Phase 6** — Configuration, observability and lifecycle
-- [ ] **Phase 7** — Tooling and CI
-- [ ] **Phase 8** — Deployment artifacts
-- [ ] **Phase 9** — Documentation
-- [ ] **Phase 10** — Final verification and handoff
+- [x] **Phase 3** — Idempotency, retry safety and duplicate suppression — `b96e3e7`, `c42a7b9`, `7f0d3e9`, `4a4e810`
+- [x] **Phase 4** — Streaming and upstream I/O — `558b892`
+- [x] **Phase 5** — Security model — `5bd3e3d` (owner decisions applied)
+- [x] **Phase 6** — Configuration, observability and lifecycle — `f8a1460` (config schema + drift tests)
+- [x] **Phase 7** — Tooling and CI — `4e4c06a`
+- [x] **Phase 8** — Deployment artifacts — `4e4c06a`
+- [x] **Phase 9** — Documentation — `4e4c06a`
+- [x] **Phase 10** — Final verification and handoff — all 10 reproduced findings re-verified fixed
 
 ---
 
@@ -174,7 +175,7 @@ are the Phase 5 values, which encode the owner decisions in §12.
 | `ALLOWED_ORIGINS`    | _(empty)_ | extra origins beyond the private-network default                                   |
 | `ALLOWED_HOSTS`      | _(empty)_ | extra Host values; `*` accepts any Host                                            |
 | `TRUST_PROXY`        | `false`   | trust `X-Forwarded-For` (★N4)                                                      |
-| `PUBLIC_BASE_URL`    | _(empty)_ | base URL advertised by the OAuth stubs; empty derives it from the request (★N10)    |
+| `PUBLIC_BASE_URL`    | _(empty)_ | base URL advertised by the OAuth stubs; empty derives it from the request (★N10)   |
 | `RATE_LIMIT_ENABLED` | `true`    | **owner decision 5**                                                               |
 | `RATE_LIMIT_MAX_RPS` | `100`     | **owner decision 5** — generous                                                    |
 | `RATE_LIMIT_BURST`   | `200`     | **owner decision 5** — generous                                                    |
@@ -401,195 +402,103 @@ no annotations to warn clients before unsafe calls.
 | P4 — unknown whether Stitch implements `resources/list` | Needs a live probe with the owner's key, which must be opt-in.                                              |
 | Live `tools/list` annotations from Stitch are unknown   | Classification currently relies on the built-in table; upstream annotations take precedence once observed.  |
 
-## 12. Questions for the owner
+## 12. Owner decisions (answered 2026-10-18)
 
-These are **irreversible / default-changing decisions** that will not be applied without an answer.
-Backward-compatible opt-in implementations proceed meanwhile.
+All six questions are answered. Every answer is implemented and covered by a test in
+`test/config.test.js` ("documented defaults match the resolved defaults").
 
-1. **Bind address.** Default `127.0.0.1` instead of `0.0.0.0`? (Spec says servers _SHOULD_ bind loopback. LAN setups would need `MCP_SERVER_HOST=0.0.0.0`.)
-2. **Origins + env key.** Default `ALLOWED_ORIGINS` no longer `*`, and stop the env-key fallback for browser-origin requests?
-3. **Proxy auth.** Require `PROXY_AUTH_TOKEN` (or refuse to start) when bound to a non-loopback address with an env API key configured?
-4. **Unsafe-call windows.** Orphaned-result replay window and max background duration (proposed **10 min / 10 min**)?
-5. **Defaults now off.** Enable rate limiting by default with a generous limit? Log viewer off by default in Docker?
-6. **Language.** JS + `checkJs` (recommended, preserves zero-build) vs migrating to TypeScript?
+| #   | Question                    | **Decision**                                            | Implementation                                                                                                                   |
+| --- | --------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Default bind address?       | **Keep `0.0.0.0`** — LAN computers must reach the proxy | `MCP_SERVER_HOST` default unchanged; compose publishes `8787:8787`; asserted by `deploy.test.js`                                 |
+| 2   | `ALLOWED_ORIGINS` default?  | **Must accept LAN computers**                           | Origin policy allows private-network origins and refuses the public internet (ADR 0005). `CORS_ORIGIN` default is empty, not `*` |
+| 3   | Require `PROXY_AUTH_TOKEN`? | **No** — LAN-only reachability is the control           | No auth layer. Documented as a deliberate non-goal in `SECURITY.md`                                                              |
+| 4   | Unsafe-call windows?        | **10 minutes / 10 minutes**                             | `UNSAFE_MAX_DURATION_MS=600000`, `REPLAY_WINDOW_MS=600000`                                                                       |
+| 5   | Rate limiting by default?   | **Yes, generous**                                       | `RATE_LIMIT_ENABLED=true`, `RATE_LIMIT_MAX_RPS=100`, `RATE_LIMIT_BURST=200`                                                      |
+| 6   | Language?                   | **JS + `checkJs`** (preserves zero-build)               | ADR 0001; `tsc --noEmit --allowJs --checkJs` in `npm run verify` and CI                                                          |
 
-## 13. Phase 0 — what landed
+### Consequence worth stating plainly
 
-| Item                               | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Branch                             | `hardening/v1` (from `main` @ `2578c26`)                                                                                                                                                                                                                                                                                                                                                                                               |
-| `package.json`                     | `private`, `type: commonjs`, `engines.node >=20.3.0`, scripts `start`/`test`/`test:coverage`/`lint`/`format`/`format:check`/`typecheck`/`verify`. **No runtime dependencies.** Dev-only: `eslint`, `@eslint/js`, `globals`, `prettier`, `typescript`, `@types/node`.                                                                                                                                                                   |
-| `eslint.config.js`                 | Flat config, `js.configs.recommended` + node globals. `no-console` off, `no-unused-vars` strict with `^_` escape, `prefer-const` on.                                                                                                                                                                                                                                                                                                   |
-| `tsconfig.json`                    | `allowJs` + `checkJs`, `noEmit`, `strict: false` (the baseline file is annotated only where it matters), `types: ["node"]`.                                                                                                                                                                                                                                                                                                            |
-| `.prettierrc`                      | `printWidth: 100`, `proseWrap: preserve`. `index.js` is **not** reformatted (keeps the Phase 0 diff reviewable).                                                                                                                                                                                                                                                                                                                       |
-| **The seam**                       | `applyConfig(env, overrides)` + `resolveConfigFromEnv` + `CONFIG_KEYS` + `assignConfig` + `getConfig`; `createState()`; module-level `state` pointer holding `metrics`, `activeConnections`, `rateLimitBuckets`, `tokenCache`, `isShuttingDown`, `warnings`; `handleRequest(req, res)`; `createProxyServer(options)`; `logStartupBanner()`; `logCredentialGuidance()`. `listen()` now happens **only** when `require.main === module`. |
-| Deliberate Phase 0 behaviour fixes | (a) ★C5 missing `return` in the streaming branch — this was a process-killing crash; (b) the two credential guidance messages moved from module load to the entry point so they no longer print before the config is resolved; (c) `let projectId` → `const projectId` (never reassigned); (d) ESLint-driven cleanups (`for…of Object.keys`, regex disables, exported `readRequestBody`).                                              |
-| Harness                            | `test/helpers/fakeStitch.js` (scripted upstream: `json`, `sse`, `resetAfterReceive`, `hang`, `delay`, `status`, `refuse`; records every request) and `test/helpers/startProxy.js` (in-process, ephemeral port, injected config).                                                                                                                                                                                                       |
-| `test/characterization.test.js`    | 43 active tests pinning every route, credential precedence, the `prompts/list` fallback, 405s, 413, 429, path traversal, metrics text, CORS, origin validation, upstream request/response shapes, streaming and logging.                                                                                                                                                                                                               |
-| `test/bugs.test.js`                | 2 active ★C5 regression tests + **27 `test.todo()`** entries for the still-open findings.                                                                                                                                                                                                                                                                                                                                              |
-| Gate evidence                      | `npm test` → 70 tests: **43 pass, 27 todo, 0 fail**. `npm run lint` → clean. `npm run typecheck` → clean. `npm run verify` → exit 0. `./run.sh` → starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit.                                                                                                                                                                                                                                 |
+Because of decisions 1–3, **any device on the LAN can use the proxy, including with the server's
+own `STITCH_API_KEY`**. That is intended. If the LAN is not fully trusted, bind `127.0.0.1` or put
+an authenticating reverse proxy in front. This is written down in `SECURITY.md` rather than being
+left implicit.
 
-### Note on the test-process model
+## 12b. Open questions
 
-`node:test` runs each **test file** in its own process, which matters because the Phase 0 seam
-keeps configuration in module-level bindings: only the most recently created proxy's config is
-active per process. Tests needing different configurations therefore live in different files
-(or pass `overrides` to `createProxyServer`, which is what `startProxy()` does per test).
-Phase 2 removes the restriction by moving the config onto the instance.
+None. Two findings remain deliberately deferred (see §11) and need no decision.
 
-### Live instance warning
+## 13. What landed, phase by phase
 
-A **user-owned proxy instance is running** on `192.168.178.94:11401` (from the user's `.env`,
-`MCP_SERVER_HOST='latitude'`). Do not bind or disturb port 11401; use a different port when
-verifying `./run.sh`.
+| Phase | Commit(s)                                  | Summary                                                                                                                                                                               |
+| ----- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | `920b4ee`, `c8940a1`                       | `package.json` (zero runtime deps), ESLint/Prettier/`checkJs`, the `createProxyServer()` seam, fake-upstream harness, 43 characterization tests, 27 findings written as `test.todo()` |
+| 1     | `dfd243c`, `78cccf8`, `47e3847`            | ★C2, ★S4, ★N3, ★P2, ★N2, ★P1, ★N7, then ★N5, ★N6, ★N8                                                                                                                                 |
+| 2     | `2603fa0` … `6c0be4f`, `59957ff`           | `src/{upstream,mcp,observability,http}` extracted; multi-instance config guard; 50 unit tests                                                                                         |
+| 3     | `b96e3e7`, `c42a7b9`, `7f0d3e9`, `4a4e810` | **★C1**: classification, phase-aware retry, `-32008`, coalescing, orphan capture, idempotency keys, `tools/list` annotations                                                          |
+| 4     | `558b892`                                  | ★S1, ★S2, ★S3, ★S6: pipeline streaming, three deadlines, bounded concurrency, explicit socket timeouts                                                                                |
+| 5     | `5bd3e3d`                                  | ★C3, ★C4, ★N1, ★N4: LAN-aware origin/host policy, scoped CORS, protected viewer, split `/health`, redaction, CSP                                                                      |
+| 6     | `f8a1460`                                  | Owner defaults applied; 48-variable inventory with drift tests                                                                                                                        |
+| 7–9   | `4e4c06a`                                  | CI on Node 20/22/24, hardened Docker/systemd, README/CHANGELOG/SECURITY/INSTRUCTIONS, ADR 0004 + 0006                                                                                 |
+| 10    | final                                      | End-to-end re-verification of all ten reproduced findings; ★S4 found to have been fixed only in appearance, now genuinely fixed                                                       |
 
----
+## 14. Final verification — before → after
 
-## 14. Phase 1 — what landed (`dfd243c`)
+Every row was **reproduced against `2578c26`** and then re-verified end to end against the
+finished code.
 
-| Finding                                         | Status    | Fix                                                                                                             | Tests |
-| ----------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------- | ----- |
-| ★C2 malformed input kills the process           | **fixed** | URL from a constant base; `parseHostHeader()`; `handleRequest()` wrapper → `-32603`; `server.on("clientError")` | 6     |
-| ★S4 listener leak per request                   | **fixed** | `trackConnection` once per socket                                                                               | 2     |
-| ★N3 `HEAD /health` ⇒ 404                        | **fixed** | `HEAD` on `/health`, `/metrics`, `/instructions`                                                                | 3     |
-| ★P2 error responses always `id: null`           | **fixed** | `sendJsonRpcError()` + `extractJsonRpcIds()`; arrays supported                                                  | 7     |
-| ★N2 size limit unreachable when unauthenticated | **fixed** | bounded body read **before** the credential decision                                                            | 1     |
-| ★P1 MCP headers dropped both ways               | **fixed** | explicit request/response allow-lists; `X-Accel-Buffering: no` on SSE                                           | 5     |
-| ★N7 per-request project-ID warning              | **fixed** | `state.warnings.noProjectId` one-shot guard                                                                     | —     |
+| Finding                    | Before                                                | After                                                           |
+| -------------------------- | ----------------------------------------------------- | --------------------------------------------------------------- |
+| ★C1 duplicate side effects | `create_project` delivered **3×**                     | **1×**, answered `-32008` with "check state before retrying"    |
+| ★C2 malformed `Host`       | process **exited** (code 1)                           | `400 -32600`; healthy after 50 malformed requests               |
+| ★C3 cross-origin env key   | public origin **200** with the server's key           | public **403**; LAN **200**                                     |
+| ★C4 world-readable logs    | `/api/logs` **200** + `ACAO: *`; fat `/health`        | no CORS; non-LAN **403**; `/health` = `{status,version,uptime}` |
+| ★C5 streamed response      | process **exited** (`ERR_HTTP_HEADERS_SENT`)          | healthy after streaming                                         |
+| ★P1 MCP headers            | all dropped both ways                                 | forwarded both ways                                             |
+| ★P2 error id               | `id: null`                                            | `id: 55` echoed                                                 |
+| ★S1 unbounded stream       | upstream socket stayed open ≥6.6 s after abort        | ended after **157 ms** at the idle deadline                     |
+| ★S4 listener leak          | **41** `close` listeners on one socket, warning at 11 | **2** listeners                                                 |
+| ★N3 `HEAD /health`         | **404**                                               | **200**                                                         |
+| ★N1 viewer disabled        | `/api/logs*` still reachable                          | every viewer route `404`                                        |
+| ★N2 size limit             | unreachable when unauthenticated                      | `413` regardless of auth                                        |
+| ★N4 rate-limit bypass      | `X-Forwarded-For` trusted always                      | ignored unless `TRUST_PROXY`                                    |
+| ★N5 log attribution        | everything in `unknown-project/`                      | `arguments.projectId` used                                      |
+| ★N6 error log body         | `requestBody: undefined`                              | body retained                                                   |
+| ★N8 `test.sh`              | printed the key                                       | prints `configured`/`missing`                                   |
+| ★N9 path resolution        | broke when started elsewhere                          | resolved against `__dirname`                                    |
+| ★N10 discovery URL         | hard-coded `localhost:<port>`                         | `PUBLIC_BASE_URL` or the request origin                         |
+| ★N11 `/token`              | undocumented static token                             | documented non-auth placeholder, proven inert                   |
 
-Deliberate behaviour changes (all recorded):
+## 15. Test suite
 
-1. An unauthenticated over-sized body now answers **413** rather than 401 (★N2). Required to
-   enforce the limit at all; `MAX_BODY_SIZE_BYTES` is still the same knob.
-2. Error responses now echo the JSON-RPC `id` instead of `null` (★P2). Strictly better for
-   clients; a client that mis-relied on `null` would have to be buggy already.
-3. A malformed `Host` now answers **400 `-32600`**. Previously it killed the process. Which
-   hosts are _acceptable_ is unchanged — that allow-list is Phase 5.
-4. Requests carrying MCP headers now forward them upstream. Non-MCP headers, cookies and
-   hop-by-hop headers are still dropped.
+| File                            | Tests  | Covers                                                                                  |
+| ------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `test/characterization.test.js` | 39     | every route, credential precedence, fallbacks, CORS, metrics text, logging              |
+| `test/phase1.test.js`           | 29     | ★C2, ★S4, ★N3, ★P2, ★N2, ★P1                                                            |
+| `test/phase1b.test.js`          | 11     | ★N5, ★N6, ★N8                                                                           |
+| `test/phase3.test.js`           | 86     | classification, retry phases, coalescing, orphan capture, idempotency keys, annotations |
+| `test/phase4.test.js`           | 14     | three deadlines, backpressure, bounded capture, concurrency limiter                     |
+| `test/phase5.test.js`           | 41     | origin/host policy, scoped CORS, viewer protection, redaction, ★N9–★N11                 |
+| `test/unit.test.js`             | 52     | pure modules: jsonrpc, errors, metrics, respond, security, ratelimit                    |
+| `test/config.test.js`           | 13     | config drift, owner defaults, coherence                                                 |
+| `test/deploy.test.js`           | 18     | Dockerfile, compose, systemd, docs consistency                                          |
+| `test/bugs.test.js`             | 2 todo | P4, S5 — deliberately deferred                                                          |
 
-### Error-code table (extended)
+No test contacts the real Stitch endpoint.
 
-| Code         | Meaning                                 | Where                                                                                          |
-| ------------ | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `-32001`     | Invalid Origin header (403)             | origin validation                                                                              |
-| `-32002`     | Rate limit exceeded (429)               | token bucket                                                                                   |
-| `-32003`     | Request body too large (413)            | bounded body reader                                                                            |
-| `-32004`     | Upstream request timed out (504)        | catch, `AbortError`/`TimeoutError`                                                             |
-| `-32005`     | Method not allowed on `/mcp` (405)      | GET/DELETE/HEAD/other                                                                          |
-| `-32006`     | Upstream request to Stitch failed (502) | catch, generic                                                                                 |
-| `-32007`     | Missing API key (401)                   | credential check                                                                               |
-| `-32601`     | Not found (404)                         | router fallthrough                                                                             |
-| **`-32600`** | **Invalid Request (400)**               | **malformed `Host` or malformed HTTP (added in Phase 1)**                                      |
-| **`-32603`** | **Internal error (500)**                | **`handleRequest` safety wrapper (added in Phase 1)**                                          |
-| `-32008`     | **Outcome unknown (502)**               | unsafe call that failed after being sent; check `list_screens`/`list_projects` before retrying |
+## 16. Next action (exact, for a fresh session)
 
----
-
-## 15. Phase 1b — what landed (`78cccf8`)
-
-| Finding                                  | Status    | Fix                                                                                                                     | Tests |
-| ---------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------- | ----- |
-| ★N5 per-project debug logs misattributed | **fixed** | `extractProjectIdFromBody()`; log attribution uses `arguments.projectId`; upstream header source deliberately unchanged | 5     |
-| ★N6 error-path debug log lost the body   | **fixed** | `requestBody` and the resolved log project ID hoisted out of the `try` so the `catch` can see them                      | 3     |
-| ★N8 `test.sh` printed the API key        | **fixed** | prints `api key: configured`/`missing`; guarded by a static scan **and** a functional sentinel-key run                  | 3     |
-
-### Phase 1 summary
-
-Seven findings fixed: **★C2, ★S4, ★N3, ★P2, ★N2, ★P1, ★N7** (`dfd243c`) and
-**★N5, ★N6, ★N8** (`78cccf8`). The proxy can no longer be killed by malformed input, MCP
-headers survive in both directions, every error echoes the JSON-RPC id, and no credential is
-written to a log or a terminal.
-
----
-
-## 16. Phase 2 progress
-
-| Module                                           | Status       | Commit    |
-| ------------------------------------------------ | ------------ | --------- |
-| `src/upstream/errors.js`                         | ✅ extracted | `2603fa0` |
-| `src/mcp/jsonrpc.js`                             | ✅ extracted | `2603fa0` |
-| `src/observability/metrics.js`                   | ✅ extracted | `2603fa0` |
-| `src/unit` tests for the above                   | ✅ 24 tests  | `6c0be4f` |
-| `src/http/respond.js`                            | ⬜ next      | —         |
-| `src/http/security.js`                           | ⬜           | —         |
-| `src/http/ratelimit.js`                          | ⬜           | —         |
-| `src/observability/logger.js`                    | ⬜           | —         |
-| `src/views/*`, `src/routes/*`                    | ⬜           | —         |
-| `src/server.js`                                  | ⬜           | —         |
-| config onto the instance (multi-proxy isolation) | ⬜           | —         |
-
-`index.js`: 3,400 → 3,300 lines so far.
-
----
-
-## 17. Phase 3 progress
-
-| Item                                                                            | Status                            | Where                                          |
-| ------------------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------- |
-| Classification (safe/unsafe, batches, overrides, fail-closed)                   | ✅ `b96e3e7`                      | `src/mcp/classify.js`                          |
-| Phase-aware retry (`connect`/`sent`/`response`) + full jitter + `Retry-After`   | ✅ `b96e3e7`                      | `src/upstream/retry.js`                        |
-| `-32008` outcome-unknown response                                               | ✅ `b96e3e7`                      | `index.js`                                     |
-| In-flight coalescing (unsafe only) + per-waiter id rewrite                      | ✅ `b96e3e7`                      | `src/idempotency/store.js`, `rewriteJsonRpcId` |
-| Result store + replay (LRU, byte caps, TTL)                                     | ✅ `b96e3e7`                      | `src/idempotency/store.js`                     |
-| `Idempotency-Key` / `_meta.idempotencyKey`                                      | ✅ `4a4e810` (4 end-to-end tests) |                                                |
-| `tools/list` annotation injection                                               | ✅ `c42a7b9`                      | `annotateToolsList`                            |
-| **Orphan capture** (detach an unsafe request after client disconnect / timeout) | ✅ `7f0d3e9` (4 tests)            |                                                |
-| `notifications/cancelled` for safe in-flight requests (P5)                      | ⬜                                |                                                |
-| `tools/list` caching to absorb discovery storms                                 | ⬜                                |                                                |
-| Metrics for coalesced/replayed/orphaned                                         | ⬜                                |                                                |
-
-### Deliberate behaviour changes in Phase 3
-
-1. Unsafe calls are no longer retried after any failure that occurs once the request has been
-   sent. They answer `-32008` instead of retrying silently or returning a generic `-502`.
-2. Identical concurrent unsafe calls now produce a single upstream request; the second caller's
-   response carries `X-Proxy-Coalesced: true`.
-3. A replayed response carries `X-Proxy-Replayed: true`.
-4. `tools/list` responses gain `annotations` when the upstream omits them.
-5. Unsafe calls buffer their response instead of streaming it. Required to share one result
-   between coalesced callers; safe calls still stream.
-
----
-
-## 17. Next action (exact, for a fresh session)
-
-> **Phase 2 — continue the modularization.** No behaviour change is permitted. Each area moves
-> in its own commit, and the only permitted test edit is an import path.
+> Open the pull request `hardening/v1 → main`.
 >
-> 1. `sequential-thinking` + `architect` → write `docs/adr/0002-module-layout.md` fixing the
->    layout below, then create `src/` and move code area by area.
-> 2. Target layout (Phase 2 subset — only what exists today moves; Phase 3+ modules are added
->    later):
->    - `index.js` — entry point: load config, `createProxyServer`, `listen`, signals
->    - `src/config.js` — `applyConfig`/`resolveConfigFromEnv`/`assignConfig`/`getConfig`,
->      `CONFIG_KEYS`, parse helpers, `.env` loader
->    - `src/state.js` — `createState`, the `state` pointer
->    - `src/http/respond.js` — `sendJson`/`sendText`/`sendHtml`/`sendJsonRpcError`, escaping
->    - `src/http/security.js` — `parseHostHeader`, `validateOrigin`, `setCorsHeaders`,
->      `redactHeaders`
->    - `src/http/ratelimit.js` — token bucket, `getClientIp`
->    - `src/mcp/jsonrpc.js` — `parseJsonRpcMetadata`, `extractJsonRpcIds`,
->      `extractProjectIdFromBody`, `buildLocalFallbackResponse`
->    - `src/upstream/forward.js` — `buildForwardHeaders`, `buildForwardResponseHeaders`,
->      header allow-lists, `readRequestBody`
->    - `src/upstream/errors.js` — `describeFetchError`, `isTransientUpstreamError`
->    - `src/upstream/credentials.js` — `parseAuthHeader`, gcloud token cache
->    - `src/observability/metrics.js` — `recordMetrics`, `renderPrometheusMetrics`
->    - `src/observability/logger.js` — log rotation, `appendSummaryLog`,
->      `writeDetailedDebugLog`, `normalizeBodyForLogging`, duration classification
->    - `src/routes/*.js` — `health`, `instructions`, `logs`, `wellknown`
->    - `src/views/instructions.html.js`, `src/views/logs.html.js` — templates moved verbatim
->    - `src/server.js` — `handleRequest`, `routeRequest`, `createProxyServer`
-> 3. **The point of Phase 2 for the test suite:** move configuration off module-level bindings
->    and onto the per-instance `state`/config object, so tests can run several
->    differently-configured proxies in one process. That removes the "only the last created
->    proxy's configuration is active" limitation recorded in §13 and lets `startProxy()` serve
->    every test in a file. Verify by adding a test that starts two proxies with different
->    `CORS_ORIGIN` values in the same process and asserts both behave independently.
-> 4. Keep `index.js` as the documented entry point (`node index.js`, Docker, systemd, `run.sh`
->    all depend on it).
+> Title: `Harden, optimize and perfect gstitch-mcproxy`
 >
-> Phase 2 gate: `npm run verify` green with **zero test edits other than import paths**, plus
-> the new two-proxy isolation test. Commit per area
-> (`refactor: extract the http response helpers (phase 2)` etc.).
+> The body should carry:
+>
+> 1. the classification and idempotency tables (README "Request classification and idempotency");
+> 2. the before → after table from §14 above;
+> 3. the **migration notes** from `CHANGELOG.md` — four defaults changed (public origins refused,
+>    `/health` reduced, CORS scoped to `/mcp`, rate limiting on by default);
+> 4. links to ADRs 0001–0006;
+> 5. the two deferred findings (P4, S5) and why.
+>
+> After merge: delete `hardening/v1`, and consider the opt-in live probe (`scripts/live-probe.js`)
+> with the owner's key to close P4.

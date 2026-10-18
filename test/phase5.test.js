@@ -569,7 +569,11 @@ test("★N10 – the discovery stubs use the request's own origin, not a hard-co
     !body.issuer.includes(":9999"),
     `★N10: the issuer must not be the configured port when the client used another one (got ${body.issuer})`,
   );
-  assert.match(body.issuer, new RegExp(`:${proxy.port}$`), "the issuer should match the request host");
+  assert.match(
+    body.issuer,
+    new RegExp(`:${proxy.port}$`),
+    "the issuer should match the request host",
+  );
   assert.equal(body.token_endpoint, `${body.issuer}/token`);
 });
 

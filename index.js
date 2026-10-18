@@ -495,7 +495,11 @@ const configTargets = (() => {
     () => TRUST_PROXY,
     (v) => (TRUST_PROXY = v),
   );
-  define("PUBLIC_BASE_URL", () => PUBLIC_BASE_URL, (v) => (PUBLIC_BASE_URL = v));
+  define(
+    "PUBLIC_BASE_URL",
+    () => PUBLIC_BASE_URL,
+    (v) => (PUBLIC_BASE_URL = v),
+  );
 
   return targets;
 })();
@@ -643,9 +647,7 @@ function applyConfig(env = process.env, overrides = {}) {
   // that passes an absolute path (the test harness does) keeps it verbatim.
   if (overrides.LOG_DIR) {
     const requested = String(overrides.LOG_DIR);
-    resolved.LOG_DIR = path.isAbsolute(requested)
-      ? requested
-      : path.resolve(__dirname, requested);
+    resolved.LOG_DIR = path.isAbsolute(requested) ? requested : path.resolve(__dirname, requested);
   }
 
   assignConfig(resolved);
@@ -2422,7 +2424,6 @@ function publicBaseUrlFor(req) {
 }
 
 async function routeRequest(req, res) {
-
   // --- Origin and Host policy (ADR 0005) ---------------------------------------------
   // Owner decisions: the proxy stays on 0.0.0.0 so other LAN machines can use it, and origins
   // must accept LAN computers. The model is therefore "private network allowed, public internet
