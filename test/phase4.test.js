@@ -297,9 +297,20 @@ test("★S3 – the debug capture is capped at LOG_MAX_BODY_CHARS", async (t) =>
   });
   await response.text();
 
+  // The detail log is written through async I/O (finding S5) and, for a streamed response, only
+  // after the last chunk has reached the client — so wait for it rather than assuming the write
+  // landed before `text()` resolved.
   const projectDir = path.join(dir, "unknown-project");
-  assert.ok(fs.existsSync(projectDir), "a detail log should exist");
-  const files = fs.readdirSync(projectDir);
+  let files = [];
+  for (let attempt = 0; attempt < 100 && files.length === 0; attempt += 1) {
+    if (fs.existsSync(projectDir)) {
+      files = fs.readdirSync(projectDir);
+    }
+    if (files.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  assert.ok(files.length > 0, "a detail log should exist");
   const detail = fs.readFileSync(path.join(projectDir, files[0]), "utf8");
 
   assert.ok(detail.length < 8000, `the detail log must stay bounded, was ${detail.length} bytes`);

@@ -1,7 +1,11 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
+
+const fsp = fs.promises;
+const execFileAsync = promisify(execFile);
 
 /** Reported by `/health` and used in the startup banner. Keep in step with package.json. */
 const VERSION = "1.0.0";
@@ -669,8 +673,17 @@ function getConfig() {
   return snapshot;
 }
 
-function ensureDirectory(dirPath) {
-  fs.mkdirSync(dirPath, { recursive: true });
+/**
+ * Creates a directory, tolerating an existing one.
+ *
+ * Async on purpose: `appendSummaryLog` and `writeDetailedDebugLog` call this from the request
+ * path, where a synchronous `mkdirSync` blocks every other connection (finding S5).
+ *
+ * @param {string} dirPath
+ * @returns {Promise<void>}
+ */
+async function ensureDirectory(dirPath) {
+  await fsp.mkdir(dirPath, { recursive: true });
 }
 
 function sanitizePathSegment(value) {
@@ -704,14 +717,15 @@ function resolveLogFilePath(projectId, filename) {
 /**
  * Scans the LOG_DIR for project subdirectories and their .log files.
  * Returns a structured array sorted by project ID, with files sorted newest-first.
+ *
+ * Async since finding S5: this runs on `/api/logs`, and a large log directory used to block the
+ * event loop for the duration of the scan.
+ *
+ * @returns {Promise<Array<{ projectId: string, fileCount: number, files: Array<{ name: string, size: number, modified: string }> }>>}
  */
-function scanLogDirectory() {
-  if (!fs.existsSync(LOG_DIR)) {
-    return [];
-  }
-
+async function scanLogDirectory() {
   try {
-    const entries = fs.readdirSync(LOG_DIR, { withFileTypes: true });
+    const entries = await fsp.readdir(LOG_DIR, { withFileTypes: true });
     const projects = [];
 
     for (const entry of entries) {
@@ -723,7 +737,7 @@ function scanLogDirectory() {
       const files = [];
 
       try {
-        const fileEntries = fs.readdirSync(projectPath, { withFileTypes: true });
+        const fileEntries = await fsp.readdir(projectPath, { withFileTypes: true });
 
         for (const fileEntry of fileEntries) {
           if (!fileEntry.isFile() || !fileEntry.name.endsWith(".log")) {
@@ -731,7 +745,7 @@ function scanLogDirectory() {
           }
 
           const filePath = path.join(projectPath, fileEntry.name);
-          const stat = fs.statSync(filePath);
+          const stat = await fsp.stat(filePath);
 
           files.push({
             name: fileEntry.name,
@@ -760,24 +774,29 @@ function scanLogDirectory() {
     projects.sort((a, b) => a.projectId.localeCompare(b.projectId));
     return projects;
   } catch {
+    // A missing LOG_DIR and an unreadable one are both "no files" to the viewer.
     return [];
   }
 }
 
 /**
  * Reads the summary log file and returns paginated lines.
+ *
+ * Async since finding S5: this used `readFileSync` of the *whole* summary log on every
+ * `/api/logs/summary` request, so a large log stalled the whole proxy.
+ *
+ * @param {number} limit
+ * @param {number} offset
+ * @returns {Promise<{ lines: Array<{ number: number, text: string }>, total: number, offset: number }>}
  */
-function readSummaryLogLines(limit, offset) {
+async function readSummaryLogLines(limit, offset) {
   const safeLimit = isPositiveInteger(limit, LOG_SUMMARY_MAX_LINES);
   const safeOffset = Math.max(0, Number.isInteger(offset) ? offset : 0);
 
   const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
-  if (!fs.existsSync(logFilePath)) {
-    return { lines: [], total: 0, offset: safeOffset };
-  }
 
   try {
-    const content = fs.readFileSync(logFilePath, "utf8");
+    const content = await fsp.readFile(logFilePath, "utf8");
     const allLines = content.split("\n");
     // Remove trailing empty line from split if file ends with newline
     if (allLines.length > 0 && allLines[allLines.length - 1] === "") {
@@ -796,6 +815,7 @@ function readSummaryLogLines(limit, offset) {
       offset: safeOffset,
     };
   } catch {
+    // Missing file and unreadable file are both an empty page.
     return { lines: [], total: 0, offset: safeOffset };
   }
 }
@@ -803,27 +823,38 @@ function readSummaryLogLines(limit, offset) {
 /**
  * Reads a single log file by project ID and filename.
  * Returns null if the file doesn't exist or exceeds size limits.
+ *
+ * Async since finding S5.
+ *
+ * @param {string} projectId
+ * @param {string} filename
+ * @returns {Promise<{ content: string, size: number } | { error: string, status: number }>}
  */
-function readLogFile(projectId, filename) {
+async function readLogFile(projectId, filename) {
   const filePath = resolveLogFilePath(projectId, filename);
   if (!filePath) {
     return { error: "Invalid path", status: 403 };
   }
 
-  if (!fs.existsSync(filePath)) {
-    return { error: "File not found", status: 404 };
+  let stat;
+  try {
+    stat = await fsp.stat(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { error: "File not found", status: 404 };
+    }
+    return { error: error.message || "Failed to read file", status: 500 };
+  }
+
+  if (stat.size > LOG_VIEWER_MAX_FILE_BYTES) {
+    return {
+      error: `File too large (${stat.size} bytes, max ${LOG_VIEWER_MAX_FILE_BYTES})`,
+      status: 413,
+    };
   }
 
   try {
-    const stat = fs.statSync(filePath);
-    if (stat.size > LOG_VIEWER_MAX_FILE_BYTES) {
-      return {
-        error: `File too large (${stat.size} bytes, max ${LOG_VIEWER_MAX_FILE_BYTES})`,
-        status: 413,
-      };
-    }
-
-    return { content: fs.readFileSync(filePath, "utf8"), size: stat.size };
+    return { content: await fsp.readFile(filePath, "utf8"), size: stat.size };
   } catch (error) {
     return { error: error.message || "Failed to read file", status: 500 };
   }
@@ -833,15 +864,27 @@ function isPositiveInteger(value, fallbackValue) {
   return Number.isInteger(value) && value > 0 ? value : fallbackValue;
 }
 
-function rotateLogFileIfNeeded(filePath) {
+/**
+ * Rotates the log file once it reaches `LOG_MAX_FILE_SIZE_BYTES`.
+ *
+ * Async since finding S5. Called only from `appendSummaryLog`, which serialises its work, so the
+ * check-then-rename sequence cannot interleave with another append.
+ *
+ * @param {string} filePath
+ * @returns {Promise<void>}
+ */
+async function rotateLogFileIfNeeded(filePath) {
   const maxFileSizeBytes = isPositiveInteger(LOG_MAX_FILE_SIZE_BYTES, 5242880);
   const maxRotatedFiles = isPositiveInteger(LOG_MAX_ROTATED_FILES, 5);
 
-  if (!fs.existsSync(filePath)) {
+  let size;
+  try {
+    ({ size } = await fsp.stat(filePath));
+  } catch {
+    // Nothing to rotate yet.
     return;
   }
 
-  const { size } = fs.statSync(filePath);
   if (size < maxFileSizeBytes) {
     return;
   }
@@ -850,19 +893,15 @@ function rotateLogFileIfNeeded(filePath) {
     const sourcePath = `${filePath}.${index}`;
     const targetPath = `${filePath}.${index + 1}`;
 
-    if (!fs.existsSync(sourcePath)) {
-      continue;
-    }
-
     if (index === maxRotatedFiles) {
-      fs.unlinkSync(sourcePath);
+      await fsp.unlink(sourcePath).catch(() => undefined);
       continue;
     }
 
-    fs.renameSync(sourcePath, targetPath);
+    await fsp.rename(sourcePath, targetPath).catch(() => undefined);
   }
 
-  fs.renameSync(filePath, `${filePath}.1`);
+  await fsp.rename(filePath, `${filePath}.1`).catch(() => undefined);
 }
 
 function stripAnsiSequences(value) {
@@ -1017,7 +1056,7 @@ function createState(config) {
     rateLimitBuckets: new Map(),
     metrics: createMetrics(),
     activeConnections: new Set(),
-    tokenCache: { value: null, fetchedAt: 0 },
+    tokenCache: { value: null, fetchedAt: 0, pending: null },
     // In-flight coalescing and orphaned-result replay (ADR 0003).
     // Bounds concurrent upstream requests (finding ★S6). The queue has a maximum wait, so a
     // saturated proxy answers 503 + Retry-After instead of hanging.
@@ -1068,19 +1107,55 @@ function trackConnection(socket) {
   });
 }
 
+/**
+ * Serialises summary-log writes.
+ *
+ * Two concurrent appends must not interleave with rotation: `rotateLogFileIfNeeded` renames the
+ * file away, so an append that raced it would write to the rotated file. A promise chain also
+ * preserves line ordering, which the previous `appendFileSync` got for free by blocking.
+ */
+let summaryLogQueue = Promise.resolve();
+
+/**
+ * Appends one line to the summary log.
+ *
+ * Async since finding S5: `appendFileSync` + `statSync` + `renameSync` ran on every logged
+ * request, blocking the event loop three times per call.
+ *
+ * @param {string} line
+ * @returns {Promise<void>} resolves once the line is on disk (or logging is disabled)
+ */
 function appendSummaryLog(line) {
   if (!LOG_ENABLED || (LOG_LEVEL !== "info" && LOG_LEVEL !== "debug")) {
-    return;
+    return Promise.resolve();
   }
 
-  try {
-    ensureDirectory(LOG_DIR);
-    const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
-    rotateLogFileIfNeeded(logFilePath);
-    fs.appendFileSync(logFilePath, line);
-  } catch (error) {
-    console.error("❌ Failed to write summary log:", error);
-  }
+  const write = summaryLogQueue.then(async () => {
+    try {
+      await ensureDirectory(LOG_DIR);
+      const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
+      await rotateLogFileIfNeeded(logFilePath);
+      await fsp.appendFile(logFilePath, line);
+    } catch (error) {
+      console.error("❌ Failed to write summary log:", error);
+    }
+  });
+
+  // The queue must never stay rejected, or every later append would be skipped.
+  summaryLogQueue = write.catch(() => undefined);
+  return write;
+}
+
+/**
+ * Resolves once every queued summary-log line is on disk.
+ *
+ * Writes are async now, so shutdown has to wait for the queue instead of relying on the
+ * process not exiting mid-`appendFileSync` (finding S5).
+ *
+ * @returns {Promise<void>}
+ */
+function flushSummaryLogs() {
+  return summaryLogQueue;
 }
 
 /**
@@ -1102,7 +1177,7 @@ function appendSummaryLog(line) {
  *   error?: any,
  * }} entry
  */
-function writeDetailedDebugLog({
+async function writeDetailedDebugLog({
   requestLogId,
   timestamp,
   req,
@@ -1127,7 +1202,7 @@ function writeDetailedDebugLog({
 
   try {
     const projectLogDir = path.join(LOG_DIR, sanitizePathSegment(projectId));
-    ensureDirectory(projectLogDir);
+    await ensureDirectory(projectLogDir);
 
     const fileTimestamp = timestamp.replace(/[:.]/g, "-");
     const filePath = path.join(projectLogDir, `${fileTimestamp}-${requestLogId}.log`);
@@ -1158,14 +1233,19 @@ function writeDetailedDebugLog({
       "",
     ].join("\n");
 
-    fs.writeFileSync(filePath, content, "utf8");
+    await fsp.writeFile(filePath, content, "utf8");
   } catch (writeError) {
     console.error("❌ Failed to write debug log:", writeError);
   }
 }
 
-function readInstructionsMarkdown() {
-  return fs.readFileSync(INSTRUCTIONS_PATH, "utf8");
+/**
+ * Reads `INSTRUCTIONS.md` for the `/instructions` page.
+ *
+ * @returns {Promise<string>}
+ */
+async function readInstructionsMarkdown() {
+  return fsp.readFile(INSTRUCTIONS_PATH, "utf8");
 }
 
 function parseInstructionsMarkdown(markdown) {
@@ -2152,26 +2232,54 @@ function logCredentialGuidance() {
   }
 }
 
-function getAccessToken() {
+/**
+ * Asks `gcloud` for an OAuth access token.
+ *
+ * Async since finding S5: `execSync` blocked the event loop until the gcloud CLI exited — often
+ * hundreds of milliseconds — and it is only used on the opt-in gcloud fallback path.
+ *
+ * @returns {Promise<string>}
+ */
+async function getAccessToken() {
   try {
-    return execSync("gcloud auth print-access-token").toString().trim();
+    const { stdout } = await execFileAsync("gcloud", ["auth", "print-access-token"]);
+    return String(stdout).trim();
   } catch (error) {
     const details = error?.stderr?.toString?.().trim() || error.message;
     throw new Error(`gcloud auth failed. ${details}`);
   }
 }
 
-function getCachedToken() {
+/**
+ * Returns a cached OAuth token, refreshing it every five minutes.
+ *
+ * Concurrent callers share one in-flight `gcloud` invocation. `execSync` used to guarantee that
+ * by blocking the process; with async I/O it has to be explicit.
+ *
+ * @returns {Promise<string>}
+ */
+async function getCachedToken() {
   const now = Date.now();
   const cache = state.tokenCache;
 
-  if (!cache.value || now - cache.fetchedAt > 5 * 60 * 1000) {
-    cache.value = getAccessToken();
-    cache.fetchedAt = now;
-    console.log("🔄 Refreshed OAuth token");
+  if (cache.value && now - cache.fetchedAt <= 5 * 60 * 1000) {
+    return cache.value;
   }
 
-  return cache.value;
+  if (!cache.pending) {
+    cache.pending = getAccessToken()
+      .then((token) => {
+        cache.value = token;
+        cache.fetchedAt = Date.now();
+        console.log("🔄 Refreshed OAuth token");
+        return token;
+      })
+      .finally(() => {
+        cache.pending = null;
+      });
+  }
+
+  return cache.pending;
 }
 
 /**
@@ -2580,8 +2688,9 @@ async function routeRequest(req, res) {
     }
 
     const logFilePath = path.join(LOG_DIR, LOG_FILE_NAME);
-    const summaryLogExists = fs.existsSync(logFilePath);
-    const summaryLogSizeBytes = summaryLogExists ? fs.statSync(logFilePath).size : 0;
+    const summaryLogStat = await fsp.stat(logFilePath).catch(() => null);
+    const summaryLogExists = summaryLogStat !== null;
+    const summaryLogSizeBytes = summaryLogStat ? summaryLogStat.size : 0;
 
     return sendJson(
       res,
@@ -2649,7 +2758,7 @@ async function routeRequest(req, res) {
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/instructions") {
     try {
-      const markdown = readInstructionsMarkdown();
+      const markdown = await readInstructionsMarkdown();
       const data = parseInstructionsMarkdown(markdown);
       const accept = req.headers.accept || "";
 
@@ -2695,8 +2804,9 @@ async function routeRequest(req, res) {
 
   if (req.method === "GET" && url.pathname === "/api/logs") {
     const summaryLogPath = path.join(LOG_DIR, LOG_FILE_NAME);
-    const summaryExists = fs.existsSync(summaryLogPath);
-    const summarySize = summaryExists ? fs.statSync(summaryLogPath).size : 0;
+    const summaryStat = await fsp.stat(summaryLogPath).catch(() => null);
+    const summaryExists = summaryStat !== null;
+    const summarySize = summaryStat ? summaryStat.size : 0;
 
     return sendJson(res, 200, {
       logDir: LOG_DIR,
@@ -2705,7 +2815,7 @@ async function routeRequest(req, res) {
         exists: summaryExists,
         size: summarySize,
       },
-      projects: scanLogDirectory(),
+      projects: await scanLogDirectory(),
     });
   }
 
@@ -2716,7 +2826,7 @@ async function routeRequest(req, res) {
     );
     const offset = Number.parseInt(url.searchParams.get("offset") || "0", 10);
 
-    return sendJson(res, 200, readSummaryLogLines(limit, offset));
+    return sendJson(res, 200, await readSummaryLogLines(limit, offset));
   }
 
   // Match /api/logs/<projectId>/<filename>
@@ -2725,9 +2835,9 @@ async function routeRequest(req, res) {
     const [, projectId, filename] = logFileMatch;
     // Decode URI components (filenames have encoded dots from timestamps)
     const decodedFilename = decodeURIComponent(filename);
-    const result = readLogFile(projectId, decodedFilename);
+    const result = await readLogFile(projectId, decodedFilename);
 
-    if (result.error) {
+    if ("error" in result) {
       return sendJson(res, result.status, { error: result.error });
     }
 
@@ -2778,7 +2888,7 @@ async function routeRequest(req, res) {
           durationMs,
           isError: false,
         });
-        appendSummaryLog(
+        await appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - GET /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: no SSE stream offered\n`,
         );
         res.setHeader("Allow", "POST, OPTIONS");
@@ -2801,7 +2911,7 @@ async function routeRequest(req, res) {
           durationMs,
           isError: false,
         });
-        appendSummaryLog(
+        await appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - DELETE /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: stateless, no session to terminate\n`,
         );
         res.setHeader("Allow", "POST, OPTIONS");
@@ -2822,7 +2932,7 @@ async function routeRequest(req, res) {
         durationMs,
         isError: false,
       });
-      appendSummaryLog(
+      await appendSummaryLog(
         `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)}\n`,
       );
       res.setHeader("Allow", "POST, OPTIONS");
@@ -2898,7 +3008,7 @@ async function routeRequest(req, res) {
           durationMs: Date.now() - requestStartedAt,
           isError: true,
         });
-        appendSummaryLog(
+        await appendSummaryLog(
           `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 413 - DURATION_MS: ${
             Date.now() - requestStartedAt
           } - ERROR: body too large (read ${readBytes}, max ${MAX_BODY_SIZE_BYTES})\n`,
@@ -2988,7 +3098,7 @@ async function routeRequest(req, res) {
 
       let token = null;
       if (!apiKey && gcloudFallbackEnabled && req.method !== "GET") {
-        token = getCachedToken();
+        token = await getCachedToken();
       }
 
       // --- Classify (ADR 0003) -----------------------------------------------------------
@@ -3038,7 +3148,7 @@ async function routeRequest(req, res) {
             durationMs,
             isError: stored.status >= 500,
           });
-          appendSummaryLog(
+          await appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${
               classification.method
             } - STATUS: ${stored.status} - DURATION_MS: ${durationMs} - REPLAYED: true\n`,
@@ -3072,7 +3182,7 @@ async function routeRequest(req, res) {
             durationMs,
             isError: false,
           });
-          appendSummaryLog(
+          await appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
               apiKey ? "configured" : "none"
             } - PROJECT_ID: ${projectId || "none"} - STATUS: 202 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - LOCAL_FALLBACK: true\n`,
@@ -3089,12 +3199,12 @@ async function routeRequest(req, res) {
           durationMs,
           isError: false,
         });
-        appendSummaryLog(
+        await appendSummaryLog(
           `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
             apiKey ? "configured" : "none"
           } - PROJECT_ID: ${projectId || "none"} - STATUS: 200 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - LOCAL_FALLBACK: true\n`,
         );
-        writeDetailedDebugLog({
+        await writeDetailedDebugLog({
           requestLogId,
           timestamp,
           req,
@@ -3159,7 +3269,9 @@ async function routeRequest(req, res) {
       };
 
       let upstreamInFlight = false;
-      const onClientClose = () => {
+      // Async only because the detach log line is written through the async log queue (S5); the
+      // emitter does not await it, and nothing after the write depends on it.
+      const onClientClose = async () => {
         if (res.writableEnded) {
           return;
         }
@@ -3177,7 +3289,7 @@ async function routeRequest(req, res) {
         // for the retry (orphan capture).
         orphaned = true;
         state.idempotency.recordOrphan();
-        appendSummaryLog(
+        await appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 499 - DETACHED: true - TOOL: ${
             classification.toolName || classification.method
           }\n`,
@@ -3267,19 +3379,19 @@ async function routeRequest(req, res) {
           // Attach the storage work to the still-running upstream request. This must never
           // reject: it runs after the client is gone.
           joined.promise
-            .then((late) => {
+            .then(async (late) => {
               if (late.status < 400) {
                 state.idempotency.put(fingerprint, late, {
                   explicitKey: Boolean(explicitIdempotencyKey),
                   delivered: false,
                 });
               }
-              appendSummaryLog(
+              await appendSummaryLog(
                 `${new Date().toISOString()} - ID: ${requestLogId} - ${classification.method} - ORPHAN_FINISHED: true - STATUS: ${late.status}\n`,
               );
             })
-            .catch((lateError) => {
-              appendSummaryLog(
+            .catch(async (lateError) => {
+              await appendSummaryLog(
                 `${new Date().toISOString()} - ID: ${requestLogId} - ${classification.method} - ORPHAN_FAILED: ${describeFetchError(lateError)}\n`,
               );
             });
@@ -3320,7 +3432,7 @@ async function routeRequest(req, res) {
             durationMs: Date.now() - requestStartedAt,
             isError: false,
           });
-          appendSummaryLog(
+          await appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 499 - ORPHAN_STORED: ${
               coalescedResult.status < 400
             } - TOOL: ${classification.toolName || classification.method}\n`,
@@ -3333,7 +3445,7 @@ async function routeRequest(req, res) {
 
         if (joined.coalesced) {
           clearRequestTimers();
-          appendSummaryLog(
+          await appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${
               classification.method
             } - STATUS: ${coalescedResult.status} - COALESCED: true\n`,
@@ -3444,7 +3556,7 @@ async function routeRequest(req, res) {
         });
 
         if (!(req.method === "GET" && LOG_SKIP_MCP_GET)) {
-          appendSummaryLog(
+          await appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
               apiKey ? "configured" : "none"
             } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - STREAM: true - BYTES: ${streamResult.bytes}${
@@ -3460,7 +3572,7 @@ async function routeRequest(req, res) {
         }
 
         if (captureEnabled) {
-          writeDetailedDebugLog({
+          await writeDetailedDebugLog({
             requestLogId,
             timestamp,
             req,
@@ -3511,14 +3623,14 @@ async function routeRequest(req, res) {
         });
 
         if (!(req.method === "GET" && url.pathname === "/mcp" && LOG_SKIP_MCP_GET)) {
-          appendSummaryLog(
+          await appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
               apiKey ? "configured" : "none"
             } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass}\n`,
           );
         }
 
-        writeDetailedDebugLog({
+        await writeDetailedDebugLog({
           requestLogId,
           timestamp,
           req,
@@ -3584,7 +3696,7 @@ async function routeRequest(req, res) {
           durationMs,
           isError: false,
         });
-        appendSummaryLog(
+        await appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 499 - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: client disconnected\n`,
         );
         return;
@@ -3600,14 +3712,14 @@ async function routeRequest(req, res) {
         isError: true,
       });
 
-      appendSummaryLog(
+      await appendSummaryLog(
         `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: ${isTimeout ? 504 : 502} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - ERROR: ${errorDetail}\n`,
       );
 
       // Finding ★N6: this used `requestBody: undefined` and the env project ID, so the
       // requests most worth debugging — the ones that failed — came out with no body and the
       // wrong project. The body is already in scope and bounded by the size limit.
-      writeDetailedDebugLog({
+      await writeDetailedDebugLog({
         requestLogId,
         timestamp: new Date().toISOString(),
         req,
@@ -3642,7 +3754,7 @@ async function routeRequest(req, res) {
       // `-32006` would invite the model to try again. Answer with a dedicated code whose
       // message tells the client exactly how to establish the truth.
       if (outcomeUnknown && !classification.safe) {
-        appendSummaryLog(
+        await appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} ${req.url} - STATUS: 502 - OUTCOME_UNKNOWN: true - TOOL: ${
             classification.toolName || classification.method
           }\n`,
@@ -4075,12 +4187,15 @@ function gracefulShutdown(server, signal) {
 
   // Give existing connections time to drain
   const drainStart = Date.now();
-  const checkDrain = setInterval(() => {
+  const checkDrain = setInterval(async () => {
     const remaining = state.activeConnections.size;
     const elapsed = Date.now() - drainStart;
 
     if (remaining === 0) {
       clearInterval(checkDrain);
+      // Log lines are written asynchronously (finding S5); give the queue a chance to drain
+      // before the process goes away, or the last request's line is lost on every restart.
+      await flushSummaryLogs();
       console.log("✅ All connections drained. Exiting.");
       process.exit(0);
     }
@@ -4117,6 +4232,7 @@ module.exports = {
   createState,
   getState,
   handleRequest,
+  flushSummaryLogs,
   // Exported for tests and for Phase 1+ work; not part of the public HTTP contract.
   buildLocalFallbackResponse: buildLocalFallbackResponseFor,
   validateOrigin: (req, corsOrigin) => evaluateOrigin(req.headers.origin, { corsOrigin }).allowed,

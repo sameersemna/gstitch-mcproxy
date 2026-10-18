@@ -10,16 +10,16 @@
 | Field   | Value                                                                                                          |
 | ------- | -------------------------------------------------------------------------------------------------------------- |
 | Phase   | **all phases complete (0–10); released as `v1.0.0`**                                                           |
-| Step    | P4 probe written; the remaining work is S5 (async I/O) and running the probe with the owner's key              |
-| Status  | Gates green: 308 tests → **306 pass / 2 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
+| Step    | P4 probe written and S5 fixed; the only remaining work is running the probe with the owner's key               |
+| Status  | Gates green: 311 tests → **310 pass / 1 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
 | Started | 2026-10-17                                                                                                     |
 
 ## 2. Last green commit
 
 | Field     | Value                                                                  |
 | --------- | ---------------------------------------------------------------------- |
-| Branch    | `main` @ `v1.0.0` (`dd3448e`) plus the P4 probe commit                 |
-| test      | 306 pass / 2 todo / 0 fail (308 tests, ~10 s)                          |
+| Branch    | `main` @ `v1.0.0` (`dd3448e`) plus the P4 probe and S5 commits         |
+| test      | 310 pass / 1 todo / 0 fail (311 tests, ~10 s)                          |
 | lint      | clean                                                                  |
 | typecheck | clean (`scripts/**/*.js` is in `tsconfig.json` `include`)              |
 | verify    | `npm run verify` exits 0                                               |
@@ -357,14 +357,14 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 
 ### 10.3 Streaming and resource handling
 
-| ID  | Reproduced | Evidence                                                                                                                                                                                                                                                                                                 | Regression test                                                                               |
-| --- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| ★S1 | ✅ **YES** | `REQUEST_TIMEOUT_MS=2000`; client POSTed at a never-ending SSE upstream and aborted at **600 ms**. At **+6.6 s** the upstream TCP connection was still `ESTAB` (`127.0.0.1:8812 ↔ 127.0.0.1:35890`), held open by the proxy. Neither the headers timeout nor the client-close listener aborted the body. | Phase 4                                                                                       |
-| S2  | read-only  | `res.write(chunk)` return value ignored in the stream loop ⇒ unbounded buffering for a slow client.                                                                                                                                                                                                      | Phase 4                                                                                       |
-| S3  | read-only  | `const streamChunks = []` + `streamChunks.push(chunk)` run unconditionally, even when `LOG_ENABLED=false` or `LOG_LEVEL!=debug`.                                                                                                                                                                         | Phase 4                                                                                       |
-| ★S4 | ✅ **YES** | 12 sequential keep-alive requests on one socket ⇒ `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 close listeners added to [Socket].`                                                                                                                                       | **FIXED `dfd243c`** — tracking moved to `server.on("connection")`; 40-request regression test |
-| S5  | read-only  | `readSummaryLogLines()` → `fs.readFileSync` of the **whole** file; `appendSummaryLog` → `appendFileSync` + `statSync` + `renameSync`; `scanLogDirectory`/`readLogFile` → sync fs; `getAccessToken()` → `execSync("gcloud auth print-access-token")`.                                                     | Phase 4                                                                                       |
-| S6  | read-only  | `requestTimeout`/`headersTimeout`/`keepAliveTimeout` left at Node defaults (300 s/60 s/5 s); no cap on concurrent upstream requests.                                                                                                                                                                     | Phase 4                                                                                       |
+| ID  | Reproduced | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Regression test                                                                               |
+| --- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| ★S1 | ✅ **YES** | `REQUEST_TIMEOUT_MS=2000`; client POSTed at a never-ending SSE upstream and aborted at **600 ms**. At **+6.6 s** the upstream TCP connection was still `ESTAB` (`127.0.0.1:8812 ↔ 127.0.0.1:35890`), held open by the proxy. Neither the headers timeout nor the client-close listener aborted the body.                                                                                                                                                       | Phase 4                                                                                       |
+| S2  | read-only  | `res.write(chunk)` return value ignored in the stream loop ⇒ unbounded buffering for a slow client.                                                                                                                                                                                                                                                                                                                                                            | Phase 4                                                                                       |
+| S3  | read-only  | `const streamChunks = []` + `streamChunks.push(chunk)` run unconditionally, even when `LOG_ENABLED=false` or `LOG_LEVEL!=debug`.                                                                                                                                                                                                                                                                                                                               | Phase 4                                                                                       |
+| ★S4 | ✅ **YES** | 12 sequential keep-alive requests on one socket ⇒ `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 close listeners added to [Socket].`                                                                                                                                                                                                                                                                                             | **FIXED `dfd243c`** — tracking moved to `server.on("connection")`; 40-request regression test |
+| S5  | read-only  | `readSummaryLogLines()` → `fs.readFileSync` of the **whole** file; `appendSummaryLog` → `appendFileSync` + `statSync` + `renameSync`; `scanLogDirectory`/`readLogFile` → sync fs; `getAccessToken()` → `execSync("gcloud auth print-access-token")`. **FIXED** — all async (`fs.promises`, `execFile`), with writes serialised through a queue so rotation cannot interleave; `test/s5-async.test.js` fails if a synchronous call returns to the request path. | Phase 4                                                                                       |
+| S6  | read-only  | `requestTimeout`/`headersTimeout`/`keepAliveTimeout` left at Node defaults (300 s/60 s/5 s); no cap on concurrent upstream requests.                                                                                                                                                                                                                                                                                                                           | Phase 4                                                                                       |
 
 ### 10.4 Smaller bugs (all confirmed by reading `index.js`)
 
@@ -481,8 +481,9 @@ finished code.
 | `test/unit.test.js`             | 52     | pure modules: jsonrpc, errors, metrics, respond, security, ratelimit                    |
 | `test/config.test.js`           | 13     | config drift, owner defaults, coherence                                                 |
 | `test/deploy.test.js`           | 18     | Dockerfile, compose, systemd, docs consistency                                          |
-| `test/bugs.test.js`             | 2 todo | P4, S5 — deliberately deferred                                                          |
+| `test/bugs.test.js`             | 1 todo | P4 — deliberately deferred                                                              |
 | `test/probe.test.js`            | 5      | P4 probe safety rails: opt-in flag, CI refusal, key from env only, not wired into CI    |
+| `test/s5-async.test.js`         | 4      | S5: no sync fs/exec on the request path, viewer sees async writes, rotation still caps  |
 
 No test contacts the real Stitch endpoint.
 
@@ -500,5 +501,4 @@ No test contacts the real Stitch endpoint.
 >    Verdicts are `implemented`, `implemented (empty)`, `not implemented (stream reset)` or
 >    `not implemented (method not found)`. Only the last two justify a `LOCAL_FALLBACK_METHODS`
 >    entry.
-> 2. **Close S5** — move the summary-log store and `getAccessToken()` off `readFileSync`/
->    `appendFileSync`/`statSync`/`execSync`. Behaviour must not change; the tests are the guard.
+>    S5 is done: the request path is fully async and `test/s5-async.test.js` guards it.

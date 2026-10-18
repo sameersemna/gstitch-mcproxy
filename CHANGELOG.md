@@ -17,6 +17,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the key from `STITCH_API_KEY` only (never argv), and `test/probe.test.js` asserts all three
   guards. `--json` gives machine-readable output.
 
+### Changed
+
+- **No synchronous I/O on the request path (★S5).** `readSummaryLogLines()` read the _whole_
+  summary log with `readFileSync`, every logged request paid `appendFileSync` + `statSync` +
+  `renameSync`, the log viewer used synchronous directory scans, and the gcloud fallback blocked
+  on `execSync`. All of it is now `fs.promises` / `execFile`. Summary-log writes go through a
+  serialised queue, so rotation cannot interleave with an append and line ordering is preserved;
+  concurrent gcloud callers share one in-flight invocation; shutdown drains the queue before
+  exiting so the last line is not lost on restart. `test/s5-async.test.js` fails if a synchronous
+  call returns. Behaviour is unchanged — only the event loop is no longer blocked.
+
 ## [1.0.0] — 2026-10-18
 
 First release after the hardening programme. The headline property is unchanged: **zero runtime
