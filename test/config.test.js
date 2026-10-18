@@ -137,10 +137,7 @@ test("config: CONFIG_KEYS and the resolved configuration describe the same field
 });
 
 test("config: an override is rejected unless the key exists", () => {
-  assert.throws(
-    () => applyConfig({}, { NOT_A_REAL_SETTING: 1 }),
-    /Unknown configuration override/,
-  );
+  assert.throws(() => applyConfig({}, { NOT_A_REAL_SETTING: 1 }), /Unknown configuration override/);
 });
 
 test("config: every CONFIG_KEYS entry can actually be overridden", () => {
@@ -200,14 +197,22 @@ test("config: owner decision 5 keeps the default limit generous enough for real 
   const config = applyConfig({});
 
   const buckets = new Map();
-  const limit = { enabled: config.RATE_LIMIT_ENABLED, maxRps: config.RATE_LIMIT_MAX_RPS, burst: config.RATE_LIMIT_BURST };
+  const limit = {
+    enabled: config.RATE_LIMIT_ENABLED,
+    maxRps: config.RATE_LIMIT_MAX_RPS,
+    burst: config.RATE_LIMIT_BURST,
+  };
 
   // A burst of 200 sequential calls must all pass: that is one discovery + tool sequence.
   for (let i = 0; i < 200; i += 1) {
     assert.equal(checkRateLimit(buckets, limit, "192.168.1.5", 1000).allowed, true, `call ${i}`);
   }
 
-  assert.equal(checkRateLimit(buckets, limit, "192.168.1.5", 1000).allowed, false, "then it limits");
+  assert.equal(
+    checkRateLimit(buckets, limit, "192.168.1.5", 1000).allowed,
+    false,
+    "then it limits",
+  );
 });
 
 test("config: invalid numeric values fall back instead of producing NaN", () => {

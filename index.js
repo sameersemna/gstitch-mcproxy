@@ -150,7 +150,10 @@ function parseBoolean(value, fallback) {
 }
 
 function parseInteger(value, fallback) {
-  const parsed = Number.parseInt(value === undefined || value === null ? String(fallback) : String(value), 10);
+  const parsed = Number.parseInt(
+    value === undefined || value === null ? String(fallback) : String(value),
+    10,
+  );
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
@@ -250,20 +253,56 @@ const configTargets = (() => {
     });
   };
 
-  define("STITCH_URL", () => STITCH_URL, (v) => (STITCH_URL = v));
-  define("STITCH_API_KEY", () => STITCH_API_KEY, (v) => (STITCH_API_KEY = v));
+  define(
+    "STITCH_URL",
+    () => STITCH_URL,
+    (v) => (STITCH_URL = v),
+  );
+  define(
+    "STITCH_API_KEY",
+    () => STITCH_API_KEY,
+    (v) => (STITCH_API_KEY = v),
+  );
   define(
     "DEFAULT_STITCH_PROJECT_ID",
     () => DEFAULT_STITCH_PROJECT_ID,
     (v) => (DEFAULT_STITCH_PROJECT_ID = v),
   );
-  define("MCP_SERVER_PORT", () => MCP_SERVER_PORT, (v) => (MCP_SERVER_PORT = v));
-  define("MCP_SERVER_HOST", () => MCP_SERVER_HOST, (v) => (MCP_SERVER_HOST = v));
-  define("LOG_ENABLED", () => LOG_ENABLED, (v) => (LOG_ENABLED = v));
-  define("LOG_LEVEL", () => LOG_LEVEL, (v) => (LOG_LEVEL = v));
-  define("LOG_DIR", () => LOG_DIR, (v) => (LOG_DIR = v));
-  define("LOG_FILE_NAME", () => LOG_FILE_NAME, (v) => (LOG_FILE_NAME = v));
-  define("LOG_MAX_BODY_CHARS", () => LOG_MAX_BODY_CHARS, (v) => (LOG_MAX_BODY_CHARS = v));
+  define(
+    "MCP_SERVER_PORT",
+    () => MCP_SERVER_PORT,
+    (v) => (MCP_SERVER_PORT = v),
+  );
+  define(
+    "MCP_SERVER_HOST",
+    () => MCP_SERVER_HOST,
+    (v) => (MCP_SERVER_HOST = v),
+  );
+  define(
+    "LOG_ENABLED",
+    () => LOG_ENABLED,
+    (v) => (LOG_ENABLED = v),
+  );
+  define(
+    "LOG_LEVEL",
+    () => LOG_LEVEL,
+    (v) => (LOG_LEVEL = v),
+  );
+  define(
+    "LOG_DIR",
+    () => LOG_DIR,
+    (v) => (LOG_DIR = v),
+  );
+  define(
+    "LOG_FILE_NAME",
+    () => LOG_FILE_NAME,
+    (v) => (LOG_FILE_NAME = v),
+  );
+  define(
+    "LOG_MAX_BODY_CHARS",
+    () => LOG_MAX_BODY_CHARS,
+    (v) => (LOG_MAX_BODY_CHARS = v),
+  );
   define(
     "LOG_MAX_FILE_SIZE_BYTES",
     () => LOG_MAX_FILE_SIZE_BYTES,
@@ -274,16 +313,36 @@ const configTargets = (() => {
     () => LOG_MAX_ROTATED_FILES,
     (v) => (LOG_MAX_ROTATED_FILES = v),
   );
-  define("LOG_SKIP_MCP_GET", () => LOG_SKIP_MCP_GET, (v) => (LOG_SKIP_MCP_GET = v));
-  define("LOG_SLOW_REQUEST_MS", () => LOG_SLOW_REQUEST_MS, (v) => (LOG_SLOW_REQUEST_MS = v));
+  define(
+    "LOG_SKIP_MCP_GET",
+    () => LOG_SKIP_MCP_GET,
+    (v) => (LOG_SKIP_MCP_GET = v),
+  );
+  define(
+    "LOG_SLOW_REQUEST_MS",
+    () => LOG_SLOW_REQUEST_MS,
+    (v) => (LOG_SLOW_REQUEST_MS = v),
+  );
   define(
     "LOG_VERY_SLOW_REQUEST_MS",
     () => LOG_VERY_SLOW_REQUEST_MS,
     (v) => (LOG_VERY_SLOW_REQUEST_MS = v),
   );
-  define("LOG_SKIP_MCP_METHODS", () => LOG_SKIP_MCP_METHODS, (v) => (LOG_SKIP_MCP_METHODS = v));
-  define("REQUEST_TIMEOUT_MS", () => REQUEST_TIMEOUT_MS, (v) => (REQUEST_TIMEOUT_MS = v));
-  define("MAX_BODY_SIZE_BYTES", () => MAX_BODY_SIZE_BYTES, (v) => (MAX_BODY_SIZE_BYTES = v));
+  define(
+    "LOG_SKIP_MCP_METHODS",
+    () => LOG_SKIP_MCP_METHODS,
+    (v) => (LOG_SKIP_MCP_METHODS = v),
+  );
+  define(
+    "REQUEST_TIMEOUT_MS",
+    () => REQUEST_TIMEOUT_MS,
+    (v) => (REQUEST_TIMEOUT_MS = v),
+  );
+  define(
+    "MAX_BODY_SIZE_BYTES",
+    () => MAX_BODY_SIZE_BYTES,
+    (v) => (MAX_BODY_SIZE_BYTES = v),
+  );
   define(
     "UPSTREAM_RETRY_ENABLED",
     () => UPSTREAM_RETRY_ENABLED,
@@ -304,13 +363,41 @@ const configTargets = (() => {
     () => LOCAL_FALLBACK_METHODS,
     (v) => (LOCAL_FALLBACK_METHODS = v),
   );
-  define("RATE_LIMIT_ENABLED", () => RATE_LIMIT_ENABLED, (v) => (RATE_LIMIT_ENABLED = v));
-  define("RATE_LIMIT_MAX_RPS", () => RATE_LIMIT_MAX_RPS, (v) => (RATE_LIMIT_MAX_RPS = v));
-  define("RATE_LIMIT_BURST", () => RATE_LIMIT_BURST, (v) => (RATE_LIMIT_BURST = v));
-  define("CORS_ORIGIN", () => CORS_ORIGIN, (v) => (CORS_ORIGIN = v));
-  define("METRICS_ENABLED", () => METRICS_ENABLED, (v) => (METRICS_ENABLED = v));
-  define("SHUTDOWN_DRAIN_MS", () => SHUTDOWN_DRAIN_MS, (v) => (SHUTDOWN_DRAIN_MS = v));
-  define("LOG_VIEWER_ENABLED", () => LOG_VIEWER_ENABLED, (v) => (LOG_VIEWER_ENABLED = v));
+  define(
+    "RATE_LIMIT_ENABLED",
+    () => RATE_LIMIT_ENABLED,
+    (v) => (RATE_LIMIT_ENABLED = v),
+  );
+  define(
+    "RATE_LIMIT_MAX_RPS",
+    () => RATE_LIMIT_MAX_RPS,
+    (v) => (RATE_LIMIT_MAX_RPS = v),
+  );
+  define(
+    "RATE_LIMIT_BURST",
+    () => RATE_LIMIT_BURST,
+    (v) => (RATE_LIMIT_BURST = v),
+  );
+  define(
+    "CORS_ORIGIN",
+    () => CORS_ORIGIN,
+    (v) => (CORS_ORIGIN = v),
+  );
+  define(
+    "METRICS_ENABLED",
+    () => METRICS_ENABLED,
+    (v) => (METRICS_ENABLED = v),
+  );
+  define(
+    "SHUTDOWN_DRAIN_MS",
+    () => SHUTDOWN_DRAIN_MS,
+    (v) => (SHUTDOWN_DRAIN_MS = v),
+  );
+  define(
+    "LOG_VIEWER_ENABLED",
+    () => LOG_VIEWER_ENABLED,
+    (v) => (LOG_VIEWER_ENABLED = v),
+  );
   define(
     "LOG_VIEWER_MAX_FILE_BYTES",
     () => LOG_VIEWER_MAX_FILE_BYTES,
@@ -321,17 +408,41 @@ const configTargets = (() => {
     () => LOG_SUMMARY_MAX_LINES,
     (v) => (LOG_SUMMARY_MAX_LINES = v),
   );
-  define("UNSAFE_MAX_DURATION_MS", () => UNSAFE_MAX_DURATION_MS, (v) => (UNSAFE_MAX_DURATION_MS = v));
-  define("REPLAY_WINDOW_MS", () => REPLAY_WINDOW_MS, (v) => (REPLAY_WINDOW_MS = v));
-  define("REPLAY_MAX_ENTRIES", () => REPLAY_MAX_ENTRIES, (v) => (REPLAY_MAX_ENTRIES = v));
+  define(
+    "UNSAFE_MAX_DURATION_MS",
+    () => UNSAFE_MAX_DURATION_MS,
+    (v) => (UNSAFE_MAX_DURATION_MS = v),
+  );
+  define(
+    "REPLAY_WINDOW_MS",
+    () => REPLAY_WINDOW_MS,
+    (v) => (REPLAY_WINDOW_MS = v),
+  );
+  define(
+    "REPLAY_MAX_ENTRIES",
+    () => REPLAY_MAX_ENTRIES,
+    (v) => (REPLAY_MAX_ENTRIES = v),
+  );
   define(
     "REPLAY_MAX_TOTAL_BYTES",
     () => REPLAY_MAX_TOTAL_BYTES,
     (v) => (REPLAY_MAX_TOTAL_BYTES = v),
   );
-  define("ANNOTATE_TOOLS", () => ANNOTATE_TOOLS, (v) => (ANNOTATE_TOOLS = v));
-  define("SAFE_TOOLS_CSV", () => SAFE_TOOLS_CSV, (v) => (SAFE_TOOLS_CSV = v));
-  define("UNSAFE_TOOLS_CSV", () => UNSAFE_TOOLS_CSV, (v) => (UNSAFE_TOOLS_CSV = v));
+  define(
+    "ANNOTATE_TOOLS",
+    () => ANNOTATE_TOOLS,
+    (v) => (ANNOTATE_TOOLS = v),
+  );
+  define(
+    "SAFE_TOOLS_CSV",
+    () => SAFE_TOOLS_CSV,
+    (v) => (SAFE_TOOLS_CSV = v),
+  );
+  define(
+    "UNSAFE_TOOLS_CSV",
+    () => UNSAFE_TOOLS_CSV,
+    (v) => (UNSAFE_TOOLS_CSV = v),
+  );
   define(
     "STREAM_IDLE_TIMEOUT_MS",
     () => STREAM_IDLE_TIMEOUT_MS,
@@ -362,10 +473,26 @@ const configTargets = (() => {
     () => CONCURRENCY_QUEUE_WAIT_MS,
     (v) => (CONCURRENCY_QUEUE_WAIT_MS = v),
   );
-  define("ALLOWED_ORIGINS_CSV", () => ALLOWED_ORIGINS_CSV, (v) => (ALLOWED_ORIGINS_CSV = v));
-  define("ALLOWED_HOSTS_CSV", () => ALLOWED_HOSTS_CSV, (v) => (ALLOWED_HOSTS_CSV = v));
-  define("ALLOW_ALL_HOSTS", () => ALLOW_ALL_HOSTS, (v) => (ALLOW_ALL_HOSTS = v));
-  define("TRUST_PROXY", () => TRUST_PROXY, (v) => (TRUST_PROXY = v));
+  define(
+    "ALLOWED_ORIGINS_CSV",
+    () => ALLOWED_ORIGINS_CSV,
+    (v) => (ALLOWED_ORIGINS_CSV = v),
+  );
+  define(
+    "ALLOWED_HOSTS_CSV",
+    () => ALLOWED_HOSTS_CSV,
+    (v) => (ALLOWED_HOSTS_CSV = v),
+  );
+  define(
+    "ALLOW_ALL_HOSTS",
+    () => ALLOW_ALL_HOSTS,
+    (v) => (ALLOW_ALL_HOSTS = v),
+  );
+  define(
+    "TRUST_PROXY",
+    () => TRUST_PROXY,
+    (v) => (TRUST_PROXY = v),
+  );
 
   return targets;
 })();
@@ -1012,13 +1139,7 @@ function writeDetailedDebugLog({
       "",
       "responseBody:",
       normalizeBodyForLogging(responseBody, responseHeaders?.["content-type"]),
-      ...(error
-        ? [
-          "",
-          "error:",
-          error.stack || error.message || String(error),
-        ]
-        : []),
+      ...(error ? ["", "error:", error.stack || error.message || String(error)] : []),
       "",
     ].join("\n");
 
@@ -1064,7 +1185,12 @@ function parseInstructionsMarkdown(markdown) {
           pointer += 1;
           continue;
         }
-        if (nextTrimmed.startsWith("*") || nextTrimmed.startsWith("### ") || nextTrimmed.startsWith("# ") || nextTrimmed === "---") {
+        if (
+          nextTrimmed.startsWith("*") ||
+          nextTrimmed.startsWith("### ") ||
+          nextTrimmed.startsWith("# ") ||
+          nextTrimmed === "---"
+        ) {
           break;
         }
         descriptionLines.push(nextTrimmed);
@@ -1082,9 +1208,7 @@ function parseInstructionsMarkdown(markdown) {
   const mentalModelMatch = markdown.match(/```([\s\S]*?)```/m);
   const mentalModel = mentalModelMatch ? mentalModelMatch[1].trim() : "";
 
-  const usageMapping = Array.from(
-    markdown.matchAll(/^\|\s*(.*?)\s*\|\s*(.*?)\s*\|$/gm),
-  )
+  const usageMapping = Array.from(markdown.matchAll(/^\|\s*(.*?)\s*\|\s*(.*?)\s*\|$/gm))
     .slice(2)
     .map(([, goal, tool]) => ({
       goal: goal.trim(),
@@ -1113,30 +1237,46 @@ function parseInstructionsMarkdown(markdown) {
 }
 
 function renderInstructionsHtml(data) {
-  const sectionCards = data.sections.map((section) => `
+  const sectionCards = data.sections
+    .map(
+      (section) => `
     <section class="card">
       <h2>${escapeHtml(section.title)}</h2>
       <div class="tool-grid">
-        ${section.items.map((item) => `
+        ${section.items
+          .map(
+            (item) => `
           <article class="tool-item">
             <h3>${escapeHtml(item.name)}</h3>
             <p>${formatInlineMarkdown(item.description)}</p>
           </article>
-        `).join("")}
+        `,
+          )
+          .join("")}
       </div>
     </section>
-  `).join("");
+  `,
+    )
+    .join("");
 
-  const mappingRows = data.usageMapping.map((row) => `
+  const mappingRows = data.usageMapping
+    .map(
+      (row) => `
     <tr>
       <td>${escapeHtml(row.goal)}</td>
       <td><code>${escapeHtml(row.tool)}</code></td>
     </tr>
-  `).join("");
+  `,
+    )
+    .join("");
 
-  const observationItems = data.observations.map((item) => `
+  const observationItems = data.observations
+    .map(
+      (item) => `
     <li>${formatInlineMarkdown(item)}</li>
-  `).join("");
+  `,
+    )
+    .join("");
 
   return `<!doctype html>
 <html lang="en">
@@ -2358,19 +2498,14 @@ async function routeRequest(req, res) {
     return res.end(isHead ? undefined : body);
   }
 
-  if (
-    req.method === "GET" &&
-    url.pathname === "/.well-known/oauth-protected-resource"
-  ) {
+  if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
     return sendJson(res, 200, {
       resource: `http://localhost:${MCP_SERVER_PORT}`,
       authorization_servers: [`http://localhost:${MCP_SERVER_PORT}`],
     });
   }
 
-  if (
-    req.method === "GET" && url.pathname === "/.well-known/openid-configuration"
-  ) {
+  if (req.method === "GET" && url.pathname === "/.well-known/openid-configuration") {
     return sendJson(res, 200, {
       issuer: `http://localhost:${MCP_SERVER_PORT}`,
       authorization_endpoint: `http://localhost:${MCP_SERVER_PORT}/auth`,
@@ -2413,60 +2548,60 @@ async function routeRequest(req, res) {
       res,
       200,
       {
-      status: "ok",
-      proxy: {
-        port: Number(MCP_SERVER_PORT),
-        stitchUrl: STITCH_URL,
-      },
-      credentials: {
-        envApiKeyConfigured: Boolean(STITCH_API_KEY),
-        envProjectIdOptional: true,
-        envProjectIdConfigured: Boolean(DEFAULT_STITCH_PROJECT_ID),
-        gcloudFallbackEnabled: process.env.ENABLE_GCLOUD_FALLBACK === "1",
-        projectConfigHint: DEFAULT_STITCH_PROJECT_ID
-          ? undefined
-          : "Can be provided via .env (STITCH_PROJECT_ID) or agent chat communication",
-      },
-      logging: {
-        enabled: LOG_ENABLED,
-        level: LOG_LEVEL,
-        dir: LOG_DIR,
-        fileName: LOG_FILE_NAME,
-        summaryLogExists,
-        summaryLogSizeBytes,
-        maxBodyChars: LOG_MAX_BODY_CHARS,
-        maxFileSizeBytes: LOG_MAX_FILE_SIZE_BYTES,
-        maxRotatedFiles: LOG_MAX_ROTATED_FILES,
-        skipMcpGet: LOG_SKIP_MCP_GET,
-        skipMcpMethods: Array.from(LOG_SKIP_MCP_METHODS),
-        slowRequestMs: LOG_SLOW_REQUEST_MS,
-        verySlowRequestMs: LOG_VERY_SLOW_REQUEST_MS,
-      },
-      logViewer: {
-        enabled: LOG_VIEWER_ENABLED,
-        maxFileBytes: LOG_VIEWER_MAX_FILE_BYTES,
-        summaryMaxLines: LOG_SUMMARY_MAX_LINES,
-      },
-      resilience: {
-        requestTimeoutMs: REQUEST_TIMEOUT_MS,
-        maxBodySizeBytes: MAX_BODY_SIZE_BYTES,
-        rateLimitEnabled: RATE_LIMIT_ENABLED,
-        rateLimitMaxRps: RATE_LIMIT_MAX_RPS,
-        rateLimitBurst: RATE_LIMIT_BURST,
-        corsOrigin: CORS_ORIGIN,
-        upstreamRetryEnabled: UPSTREAM_RETRY_ENABLED,
-        upstreamRetryAttempts: UPSTREAM_RETRY_ATTEMPTS,
-        upstreamRetryBaseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,
-        localFallbackMethods: Array.from(LOCAL_FALLBACK_METHODS),
-      },
-      metrics: {
-        enabled: METRICS_ENABLED,
-        requestsTotal: state.metrics.requestsTotal,
-        errorsTotal: state.metrics.errorsTotal,
-        activeConnections: state.metrics.activeConnections,
-        rateLimitedTotal: state.metrics.rateLimitedTotal,
-        uptimeSeconds: Math.floor((Date.now() - state.metrics.startTime) / 1000),
-      },
+        status: "ok",
+        proxy: {
+          port: Number(MCP_SERVER_PORT),
+          stitchUrl: STITCH_URL,
+        },
+        credentials: {
+          envApiKeyConfigured: Boolean(STITCH_API_KEY),
+          envProjectIdOptional: true,
+          envProjectIdConfigured: Boolean(DEFAULT_STITCH_PROJECT_ID),
+          gcloudFallbackEnabled: process.env.ENABLE_GCLOUD_FALLBACK === "1",
+          projectConfigHint: DEFAULT_STITCH_PROJECT_ID
+            ? undefined
+            : "Can be provided via .env (STITCH_PROJECT_ID) or agent chat communication",
+        },
+        logging: {
+          enabled: LOG_ENABLED,
+          level: LOG_LEVEL,
+          dir: LOG_DIR,
+          fileName: LOG_FILE_NAME,
+          summaryLogExists,
+          summaryLogSizeBytes,
+          maxBodyChars: LOG_MAX_BODY_CHARS,
+          maxFileSizeBytes: LOG_MAX_FILE_SIZE_BYTES,
+          maxRotatedFiles: LOG_MAX_ROTATED_FILES,
+          skipMcpGet: LOG_SKIP_MCP_GET,
+          skipMcpMethods: Array.from(LOG_SKIP_MCP_METHODS),
+          slowRequestMs: LOG_SLOW_REQUEST_MS,
+          verySlowRequestMs: LOG_VERY_SLOW_REQUEST_MS,
+        },
+        logViewer: {
+          enabled: LOG_VIEWER_ENABLED,
+          maxFileBytes: LOG_VIEWER_MAX_FILE_BYTES,
+          summaryMaxLines: LOG_SUMMARY_MAX_LINES,
+        },
+        resilience: {
+          requestTimeoutMs: REQUEST_TIMEOUT_MS,
+          maxBodySizeBytes: MAX_BODY_SIZE_BYTES,
+          rateLimitEnabled: RATE_LIMIT_ENABLED,
+          rateLimitMaxRps: RATE_LIMIT_MAX_RPS,
+          rateLimitBurst: RATE_LIMIT_BURST,
+          corsOrigin: CORS_ORIGIN,
+          upstreamRetryEnabled: UPSTREAM_RETRY_ENABLED,
+          upstreamRetryAttempts: UPSTREAM_RETRY_ATTEMPTS,
+          upstreamRetryBaseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,
+          localFallbackMethods: Array.from(LOCAL_FALLBACK_METHODS),
+        },
+        metrics: {
+          enabled: METRICS_ENABLED,
+          requestsTotal: state.metrics.requestsTotal,
+          errorsTotal: state.metrics.errorsTotal,
+          activeConnections: state.metrics.activeConnections,
+          rateLimitedTotal: state.metrics.rateLimitedTotal,
+          uptimeSeconds: Math.floor((Date.now() - state.metrics.startTime) / 1000),
+        },
         timestamp: new Date().toISOString(),
       },
       { head: isHead },
@@ -2536,7 +2671,10 @@ async function routeRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/logs/summary") {
-    const limit = Number.parseInt(url.searchParams.get("limit") || String(LOG_SUMMARY_MAX_LINES), 10);
+    const limit = Number.parseInt(
+      url.searchParams.get("limit") || String(LOG_SUMMARY_MAX_LINES),
+      10,
+    );
     const offset = Number.parseInt(url.searchParams.get("offset") || "0", 10);
 
     return sendJson(res, 200, readSummaryLogLines(limit, offset));
@@ -2577,7 +2715,13 @@ async function routeRequest(req, res) {
     // True when an unsafe request failed after being sent, so Stitch may have applied it.
     let outcomeUnknown = false;
     /** @type {any} */
-    let classification = { safe: false, requestClass: "unsafe", reason: "unclassified", method: "unknown", toolName: null };
+    let classification = {
+      safe: false,
+      requestClass: "unsafe",
+      reason: "unclassified",
+      method: "unknown",
+      toolName: null,
+    };
 
     // --- Method guard (MCP Streamable HTTP spec) ---
     // Stitch only implements POST. Forwarding GET/DELETE/PUT upstream returns a
@@ -2588,40 +2732,67 @@ async function routeRequest(req, res) {
 
       if (req.method === "GET") {
         // Spec: a server that offers no SSE stream MUST return 405 Method Not Allowed.
-        recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+        recordMetrics(state.metrics, {
+          method: req.method,
+          path: url.pathname,
+          status: 405,
+          durationMs,
+          isError: false,
+        });
         appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - GET /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: no SSE stream offered\n`,
         );
         res.setHeader("Allow", "POST, OPTIONS");
         return sendJson(res, 405, {
           jsonrpc: "2.0",
-          error: { code: -32005, message: "Method Not Allowed: this endpoint does not offer an SSE stream" },
+          error: {
+            code: -32005,
+            message: "Method Not Allowed: this endpoint does not offer an SSE stream",
+          },
           id: null,
         });
       }
 
       if (req.method === "DELETE") {
         // Spec: a server MAY return 405 to indicate it does not allow session termination.
-        recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+        recordMetrics(state.metrics, {
+          method: req.method,
+          path: url.pathname,
+          status: 405,
+          durationMs,
+          isError: false,
+        });
         appendSummaryLog(
           `${new Date().toISOString()} - ID: ${requestLogId} - DELETE /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)} - NOTE: stateless, no session to terminate\n`,
         );
         res.setHeader("Allow", "POST, OPTIONS");
         return sendJson(res, 405, {
           jsonrpc: "2.0",
-          error: { code: -32005, message: "Method Not Allowed: this server is stateless and has no session to terminate" },
+          error: {
+            code: -32005,
+            message: "Method Not Allowed: this server is stateless and has no session to terminate",
+          },
           id: null,
         });
       }
 
-      recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 405, durationMs, isError: false });
+      recordMetrics(state.metrics, {
+        method: req.method,
+        path: url.pathname,
+        status: 405,
+        durationMs,
+        isError: false,
+      });
       appendSummaryLog(
         `${new Date().toISOString()} - ID: ${requestLogId} - ${req.method} /mcp - STATUS: 405 - DURATION_MS: ${durationMs} - LATENCY: ${classifyDuration(durationMs)}\n`,
       );
       res.setHeader("Allow", "POST, OPTIONS");
       return sendJson(res, 405, {
         jsonrpc: "2.0",
-        error: { code: -32005, message: `Method Not Allowed: ${req.method} is not supported on /mcp` },
+        error: {
+          code: -32005,
+          message: `Method Not Allowed: ${req.method} is not supported on /mcp`,
+        },
         id: null,
       });
     }
@@ -2855,7 +3026,13 @@ async function routeRequest(req, res) {
         const methodSummary = formatMethodsForSummary(body);
 
         if ("notification" in localFallback) {
-          recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 202, durationMs, isError: false });
+          recordMetrics(state.metrics, {
+            method: req.method,
+            path: url.pathname,
+            status: 202,
+            durationMs,
+            isError: false,
+          });
           appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
               apiKey ? "configured" : "none"
@@ -2866,7 +3043,13 @@ async function routeRequest(req, res) {
         }
 
         const fallbackBody = JSON.stringify(localFallback);
-        recordMetrics(state.metrics, { method: req.method, path: url.pathname, status: 200, durationMs, isError: false });
+        recordMetrics(state.metrics, {
+          method: req.method,
+          path: url.pathname,
+          status: 200,
+          durationMs,
+          isError: false,
+        });
         appendSummaryLog(
           `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
             apiKey ? "configured" : "none"
@@ -3047,11 +3230,10 @@ async function routeRequest(req, res) {
           joined.promise
             .then((late) => {
               if (late.status < 400) {
-                state.idempotency.put(
-                  fingerprint,
-                  late,
-                  { explicitKey: Boolean(explicitIdempotencyKey), delivered: false },
-                );
+                state.idempotency.put(fingerprint, late, {
+                  explicitKey: Boolean(explicitIdempotencyKey),
+                  delivered: false,
+                });
               }
               appendSummaryLog(
                 `${new Date().toISOString()} - ID: ${requestLogId} - ${classification.method} - ORPHAN_FINISHED: true - STATUS: ${late.status}\n`,
@@ -3087,11 +3269,10 @@ async function routeRequest(req, res) {
         if (orphaned) {
           clearRequestTimers();
           if (coalescedResult.status < 400) {
-            state.idempotency.put(
-              fingerprint,
-              coalescedResult,
-              { explicitKey: Boolean(explicitIdempotencyKey), delivered: false },
-            );
+            state.idempotency.put(fingerprint, coalescedResult, {
+              explicitKey: Boolean(explicitIdempotencyKey),
+              delivered: false,
+            });
           }
           recordMetrics(state.metrics, {
             method: req.method || "UNKNOWN",
@@ -3121,11 +3302,10 @@ async function routeRequest(req, res) {
           res.setHeader("X-Proxy-Coalesced", "true");
 
           if (coalescedResult.status < 400) {
-            state.idempotency.put(
-              fingerprint,
-              coalescedResult,
-              { explicitKey: Boolean(explicitIdempotencyKey), delivered: true },
-            );
+            state.idempotency.put(fingerprint, coalescedResult, {
+              explicitKey: Boolean(explicitIdempotencyKey),
+              delivered: true,
+            });
           }
 
           // The shared body carries the *first* caller's JSON-RPC id; rewrite it to this
@@ -3149,11 +3329,10 @@ async function routeRequest(req, res) {
           headers: { "Content-Type": coalescedResult.contentType },
         });
         if (coalescedResult.status < 400) {
-          state.idempotency.put(
-            fingerprint,
-            coalescedResult,
-            { explicitKey: Boolean(explicitIdempotencyKey), delivered: true },
-          );
+          state.idempotency.put(fingerprint, coalescedResult, {
+            explicitKey: Boolean(explicitIdempotencyKey),
+            delivered: true,
+          });
         }
       } else {
         try {
@@ -3167,8 +3346,7 @@ async function routeRequest(req, res) {
 
       const contentType = response.headers.get("content-type") || "";
       const isStreamingResponse =
-        contentType.includes("text/event-stream") ||
-        contentType.includes("application/x-ndjson");
+        contentType.includes("text/event-stream") || contentType.includes("application/x-ndjson");
 
       // --- Stream or buffer response ---
       if (isStreamingResponse && response.body) {
@@ -3452,15 +3630,8 @@ async function routeRequest(req, res) {
     }
   }
 
-  return sendJsonRpcError(
-    res,
-    404,
-    -32601,
-    `Not found: ${req.method} ${url.pathname}`,
-    null,
-  );
+  return sendJsonRpcError(res, 404, -32601, `Not found: ${req.method} ${url.pathname}`, null);
 }
-
 
 /**
  * Performs one upstream request with the phase-aware retry policy (ADR 0003).
@@ -3647,7 +3818,10 @@ async function handleRequest(req, res) {
     try {
       sendJsonRpcError(res, 500, -32603, `Internal error: ${detail}`);
     } catch (sendError) {
-      console.error("❌ Failed to send the internal-error response:", describeFetchError(sendError));
+      console.error(
+        "❌ Failed to send the internal-error response:",
+        describeFetchError(sendError),
+      );
       res.destroy();
     }
   }
@@ -3663,7 +3837,6 @@ async function handleRequest(req, res) {
  * @type {Map<import("http").Server, string>}
  */
 const liveProxies = new Map();
-
 
 /**
  * Creates a proxy `http.Server` **without** starting to listen.
@@ -3792,9 +3965,7 @@ function logStartupBanner() {
   );
   console.log(`👉 http://${MCP_SERVER_HOST}:${MCP_SERVER_PORT}/mcp`);
   if (LOG_ENABLED) {
-    console.log(
-      `🪵 Logging enabled (${LOG_LEVEL}) -> ${path.join(LOG_DIR, LOG_FILE_NAME)}`,
-    );
+    console.log(`🪵 Logging enabled (${LOG_LEVEL}) -> ${path.join(LOG_DIR, LOG_FILE_NAME)}`);
     if (LOG_LEVEL === "debug") {
       console.log(
         `   Debug caps: body=${LOG_MAX_BODY_CHARS} chars, file=${LOG_MAX_FILE_SIZE_BYTES} bytes, rotations=${LOG_MAX_ROTATED_FILES}`,
@@ -3812,9 +3983,7 @@ function logStartupBanner() {
   if (hasApiKey && hasProjectId) {
     console.log(`   Using apiKey: configured, project: ${DEFAULT_STITCH_PROJECT_ID}`);
   } else {
-    console.log(
-      "   STITCH_API_KEY: expect from request headers or .env",
-    );
+    console.log("   STITCH_API_KEY: expect from request headers or .env");
     if (!hasProjectId) {
       console.log(
         "   STITCH_PROJECT_ID: optional — can be set in .env or provided by agents via chat",

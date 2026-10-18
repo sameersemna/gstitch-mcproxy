@@ -109,7 +109,11 @@ test("security: public-internet origins are refused by default (★C3)", () => {
 test("security: a malformed Origin is refused, not crashed on", () => {
   for (const origin of ["not a url", "http://[bad", "://missing-scheme", ""]) {
     const decision = evaluateOrigin(origin, { corsOrigin: undefined });
-    assert.equal(decision.allowed, origin === "", `${JSON.stringify(origin)} → ${decision.allowed}`);
+    assert.equal(
+      decision.allowed,
+      origin === "",
+      `${JSON.stringify(origin)} → ${decision.allowed}`,
+    );
   }
 });
 
@@ -118,7 +122,9 @@ test("security: https://localhost without a port is allowed", () => {
 });
 
 test("security: an absolute CORS_ORIGIN overrides the LAN default", () => {
-  const decision = evaluateOrigin("https://custom.example", { corsOrigin: "https://custom.example" });
+  const decision = evaluateOrigin("https://custom.example", {
+    corsOrigin: "https://custom.example",
+  });
   assert.equal(decision.allowed, true);
 
   const other = evaluateOrigin("https://other.example", { corsOrigin: "https://custom.example" });
@@ -172,10 +178,16 @@ test("security: an absent Host is accepted (HTTP/1.0)", () => {
 });
 
 test("security: ALLOWED_HOSTS adds an explicit host", () => {
-  const decision = evaluateHost({ headers: { host: "gateway.example" } }, { allowedHosts: new Set(["gateway.example"]) });
+  const decision = evaluateHost(
+    { headers: { host: "gateway.example" } },
+    { allowedHosts: new Set(["gateway.example"]) },
+  );
   assert.equal(decision.allowed, true);
 
-  const stillBlocked = evaluateHost({ headers: { host: "other.example" } }, { allowedHosts: new Set(["gateway.example"]) });
+  const stillBlocked = evaluateHost(
+    { headers: { host: "other.example" } },
+    { allowedHosts: new Set(["gateway.example"]) },
+  );
   assert.equal(stillBlocked.allowed, false);
 });
 
@@ -307,7 +319,9 @@ test("★C4 – a non-loopback peer is refused the viewer and metrics", async (t
   const viewer = await proxy.request("/logs", { headers: { "X-Forwarded-For": "203.0.113.9" } });
   assert.equal(viewer.status, 403, "a public client must not read the logs");
 
-  const metrics = await proxy.request("/metrics", { headers: { "X-Forwarded-For": "203.0.113.9" } });
+  const metrics = await proxy.request("/metrics", {
+    headers: { "X-Forwarded-For": "203.0.113.9" },
+  });
   assert.equal(metrics.status, 403);
 
   const lan = await proxy.request("/logs", { headers: { "X-Forwarded-For": "192.168.1.20" } });
@@ -415,14 +429,8 @@ test("security: redaction covers x-proxy-token and cookie", () => {
 test("security: credentials in a logged URL are scrubbed", () => {
   const { redactUrl } = require("../src/http/security.js");
 
-  assert.equal(
-    redactUrl("/mcp?key=AIzaSECRET123&other=1"),
-    "/mcp?key=[redacted]&other=1",
-  );
-  assert.equal(
-    redactUrl("/mcp?api_key=SECRET&x=y"),
-    "/mcp?api_key=[redacted]&x=y",
-  );
+  assert.equal(redactUrl("/mcp?key=AIzaSECRET123&other=1"), "/mcp?key=[redacted]&other=1");
+  assert.equal(redactUrl("/mcp?api_key=SECRET&x=y"), "/mcp?api_key=[redacted]&x=y");
   assert.equal(redactUrl("/health"), "/health");
 });
 

@@ -28,10 +28,7 @@ test("★C2 – a malformed Host header is rejected and the process survives", a
     "GET /health HTTP/1.1\r\nHost: [bad\r\nConnection: close\r\n\r\n",
   );
 
-  assert.ok(
-    !response.timedOut,
-    "the proxy must answer a malformed Host instead of hanging",
-  );
+  assert.ok(!response.timedOut, "the proxy must answer a malformed Host instead of hanging");
   assert.notEqual(
     response.error,
     "ECONNRESET",
@@ -102,7 +99,7 @@ test("★C2 – an aborted upload (client vanishes mid-request) is survivable", 
   await new Promise((resolve) => socket.on("connect", resolve));
   // Announce a large body, send a fragment, then walk away.
   socket.write(
-    "POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n{\"jsonrpc\":",
+    'POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n{"jsonrpc":',
   );
   await new Promise((resolve) => setTimeout(resolve, 60));
   socket.destroy();
@@ -166,11 +163,7 @@ test("★C2 – a request with an unparseable absolute URL does not crash", asyn
       proxy.port,
       `GET ${target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`,
     );
-    assert.equal(
-      response.error,
-      null,
-      `target ${target} raised a socket error: ${response.error}`,
-    );
+    assert.equal(response.error, null, `target ${target} raised a socket error: ${response.error}`);
     assert.ok(
       response.status === 200 || response.status === 400,
       `target ${target} should be served or rejected as a client error, got ${response.status}`,
@@ -204,13 +197,10 @@ test("★S4 – keep-alive requests must not accumulate 'close' listeners on one
 
   const get = (path) =>
     new Promise((resolve, reject) => {
-      const req = http.request(
-        { host: "127.0.0.1", port: proxy.port, path, agent },
-        (res) => {
-          res.resume();
-          res.on("end", () => resolve(res.statusCode));
-        },
-      );
+      const req = http.request({ host: "127.0.0.1", port: proxy.port, path, agent }, (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode));
+      });
       req.on("error", reject);
       req.end();
     });
@@ -337,7 +327,11 @@ test("★P2 – 504 echoes the id from the body", async (t) => {
   t.after(() => upstream.close());
   t.after(() => proxy.stop());
 
-  const response = await proxy.postJson("/mcp", { jsonrpc: "2.0", id: "req-abc", method: "tools/list" });
+  const response = await proxy.postJson("/mcp", {
+    jsonrpc: "2.0",
+    id: "req-abc",
+    method: "tools/list",
+  });
   assert.equal(response.status, 504);
   const body = await readJson(response);
   assert.equal(body.error.code, -32004);
@@ -489,11 +483,7 @@ test("★P1 – MCP protocol headers are forwarded to the upstream", async (t) =
     "client-session-1",
     "★P1: Mcp-Session-Id must reach Stitch",
   );
-  assert.equal(
-    received.headers["last-event-id"],
-    "42",
-    "★P1: Last-Event-ID must reach Stitch",
-  );
+  assert.equal(received.headers["last-event-id"], "42", "★P1: Last-Event-ID must reach Stitch");
 });
 
 test("★P1 – request metadata headers are forwarded to the upstream", async (t) => {

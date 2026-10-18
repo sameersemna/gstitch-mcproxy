@@ -254,7 +254,11 @@ test("★N6 – the error-path detail log records a real timestamp", async (t) =
 
   // The filename carries the timestamp, so if it were empty the file name would start with
   // a dash. Assert both the name and the field are well formed.
-  assert.match(files[0], /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-/, `bad file name: ${files[0]}`);
+  assert.match(
+    files[0],
+    /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-/,
+    `bad file name: ${files[0]}`,
+  );
   assert.match(detail, /timestamp: \d{4}-\d{2}-\d{2}T/);
   assert.ok(!/timestamp: \s*\n/.test(detail), "the timestamp must not be empty");
 });
@@ -293,10 +297,7 @@ test("★N6 – a timeout (504) keeps the request body in the detail log", async
 // ---------------------------------------------------------------------------
 
 test("★N8 – test.sh never echoes the API key", async () => {
-  const script = fs.readFileSync(
-    path.join(__dirname, "..", "test.sh"),
-    "utf8",
-  );
+  const script = fs.readFileSync(path.join(__dirname, "..", "test.sh"), "utf8");
 
   // Any echo/printf that interpolates the key variable would leak it into terminals and CI
   // logs — including the `set -x` output of a calling script.

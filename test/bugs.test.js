@@ -122,9 +122,7 @@ test.todo(
     "(needs an opt-in live probe with the owner's key)",
 );
 
-test.todo(
-  "P5 – notifications/cancelled must abort the matching in-flight safe upstream request",
-);
+test.todo("P5 – notifications/cancelled must abort the matching in-flight safe upstream request");
 
 // ---------------------------------------------------------------------------
 // Streaming and resource handling
@@ -152,9 +150,7 @@ test.todo(
     "(readFileSync of the whole summary log, appendFileSync, statSync, execSync gcloud)",
 );
 
-test.todo(
-  "S6 – explicit server timeouts and a cap on concurrent upstream requests",
-);
+test.todo("S6 – explicit server timeouts and a cap on concurrent upstream requests");
 
 // ---------------------------------------------------------------------------
 // Smaller bugs
@@ -165,13 +161,9 @@ test.todo(
     "(the guard only matches paths starting with '/logs')",
 );
 
-test.todo(
-  "N4 – getClientIp must not trust X-Forwarded-For unless TRUST_PROXY is enabled",
-);
+test.todo("N4 – getClientIp must not trust X-Forwarded-For unless TRUST_PROXY is enabled");
 
-test.todo(
-  "N9 – INSTRUCTIONS.md and LOG_DIR must resolve relative to __dirname, not process.cwd()",
-);
+test.todo("N9 – INSTRUCTIONS.md and LOG_DIR must resolve relative to __dirname, not process.cwd()");
 
 test.todo(
   "N10 – the .well-known stubs must use a configurable public base URL, not http://localhost:{port}",

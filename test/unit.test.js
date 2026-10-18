@@ -139,7 +139,10 @@ test("jsonrpc: the fallback answers only the configured methods", () => {
 
 test("jsonrpc: the fallback acknowledges a notification with no body", () => {
   assert.deepEqual(
-    buildLocalFallbackResponse('{"jsonrpc":"2.0","method":"prompts/list"}', new Set(["prompts/list"])),
+    buildLocalFallbackResponse(
+      '{"jsonrpc":"2.0","method":"prompts/list"}',
+      new Set(["prompts/list"]),
+    ),
     { notification: true },
   );
 });
@@ -260,9 +263,27 @@ test("metrics: createMetrics starts zeroed with the documented buckets", () => {
 test("metrics: recordMetrics bins a duration into the first matching bucket", () => {
   const metrics = createMetrics();
 
-  recordMetrics(metrics, { method: "GET", path: "/health", status: 200, durationMs: 50, isError: false });
-  recordMetrics(metrics, { method: "GET", path: "/health", status: 200, durationMs: 200, isError: false });
-  recordMetrics(metrics, { method: "GET", path: "/health", status: 500, durationMs: 200000, isError: true });
+  recordMetrics(metrics, {
+    method: "GET",
+    path: "/health",
+    status: 200,
+    durationMs: 50,
+    isError: false,
+  });
+  recordMetrics(metrics, {
+    method: "GET",
+    path: "/health",
+    status: 200,
+    durationMs: 200,
+    isError: false,
+  });
+  recordMetrics(metrics, {
+    method: "GET",
+    path: "/health",
+    status: 500,
+    durationMs: 200000,
+    isError: true,
+  });
 
   assert.equal(metrics.requestsTotal, 3);
   assert.equal(metrics.errorsTotal, 1);
@@ -276,8 +297,20 @@ test("metrics: recordMetrics bins a duration into the first matching bucket", ()
 
 test("metrics: the rendered buckets are cumulative", () => {
   const metrics = createMetrics();
-  recordMetrics(metrics, { method: "GET", path: "/a", status: 200, durationMs: 10, isError: false });
-  recordMetrics(metrics, { method: "GET", path: "/a", status: 200, durationMs: 400, isError: false });
+  recordMetrics(metrics, {
+    method: "GET",
+    path: "/a",
+    status: 200,
+    durationMs: 10,
+    isError: false,
+  });
+  recordMetrics(metrics, {
+    method: "GET",
+    path: "/a",
+    status: 200,
+    durationMs: 400,
+    isError: false,
+  });
 
   const text = renderPrometheusMetrics(metrics);
   assert.match(text, /latency_seconds_bucket\{le="0\.100"\} 1/);
@@ -482,7 +515,13 @@ test("security: a specific origin only accepts itself", () => {
 });
 
 test("security: parseHostHeader accepts the usual forms", () => {
-  for (const host of ["localhost", "localhost:8787", "127.0.0.1:11401", "example.com", "[::1]:80"]) {
+  for (const host of [
+    "localhost",
+    "localhost:8787",
+    "127.0.0.1:11401",
+    "example.com",
+    "[::1]:80",
+  ]) {
     const result = parseHostHeader(fakeRequest({ host }));
     assert.equal(result.reason, null, `${host} should be accepted`);
     assert.equal(typeof result.host, "string");
@@ -606,11 +645,11 @@ test("ratelimit: sweepRateLimitBuckets drops only stale entries", () => {
 test("ratelimit: getClientIp reads X-Forwarded-For (baseline ★N4 behaviour)", () => {
   // Pinned on purpose: the first hop is trusted unconditionally, which lets a client spoof its
   // address. Phase 5 gates this behind TRUST_PROXY; this test will then be updated deliberately.
+  assert.equal(getClientIp(fakeRequest({ "x-forwarded-for": "9.9.9.9, 10.0.0.1" })), "9.9.9.9");
   assert.equal(
-    getClientIp(fakeRequest({ "x-forwarded-for": "9.9.9.9, 10.0.0.1" })),
-    "9.9.9.9",
+    getClientIp(/** @type {any} */ ({ headers: {}, socket: { remoteAddress: "::1" } })),
+    "::1",
   );
-  assert.equal(getClientIp(/** @type {any} */ ({ headers: {}, socket: { remoteAddress: "::1" } })), "::1");
   assert.equal(getClientIp(/** @type {any} */ ({ headers: {}, socket: {} })), "unknown");
 });
 

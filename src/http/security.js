@@ -411,7 +411,14 @@ const SECRET_HEADER_PATTERNS = ["authorization", "api-key", "proxy-token", "cook
 const SECRET_HEADER_NAMES = ["stitch_api_key", "x-goog-api-key"];
 
 /** Query parameters whose value must never reach a log file. */
-const SECRET_QUERY_PARAMETERS = ["key", "api_key", "apikey", "access_token", "token", "idempotency-key"];
+const SECRET_QUERY_PARAMETERS = [
+  "key",
+  "api_key",
+  "apikey",
+  "access_token",
+  "token",
+  "idempotency-key",
+];
 
 /**
  * Replaces credential-bearing header values with `[redacted]`.

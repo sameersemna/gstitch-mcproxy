@@ -88,9 +88,7 @@ function errorCodeOf(error) {
     return "";
   }
   const cause = error.cause;
-  return String(
-    (cause && (cause.code || cause.errno)) || error.code || error.errno || "",
-  );
+  return String((cause && (cause.code || cause.errno)) || error.code || error.errno || "");
 }
 
 /**
@@ -219,7 +217,11 @@ function decideRetry(input) {
   // --- Phase: sent. The request left the proxy. ---
   if (phase === "sent") {
     if (safe) {
-      return decide(true, "sent-phase failure on a safe request", jitteredDelay(attempt, baseDelayMs, random));
+      return decide(
+        true,
+        "sent-phase failure on a safe request",
+        jitteredDelay(attempt, baseDelayMs, random),
+      );
     }
     // The dangerous case: Stitch may have applied this. Never repeat it.
     return decide(false, "outcome unknown after the request was sent", 0, true);

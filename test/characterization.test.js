@@ -22,7 +22,10 @@ test("route: GET /health returns the public liveness document", async (t) => {
   // whole configuration and credential state to anyone who could reach the port. The public
   // payload is now `{status, version, uptime}`; the full document is at `/health?verbose=1`,
   // reachable only from the local network.
-  const proxy = await startProxy({ STITCH_API_KEY: "env-key", DEFAULT_STITCH_PROJECT_ID: "proj-1" });
+  const proxy = await startProxy({
+    STITCH_API_KEY: "env-key",
+    DEFAULT_STITCH_PROJECT_ID: "proj-1",
+  });
   t.after(() => proxy.stop());
 
   const response = await proxy.request("/health");
@@ -37,7 +40,10 @@ test("route: GET /health returns the public liveness document", async (t) => {
 });
 
 test("route: GET /health?verbose=1 returns the full status document", async (t) => {
-  const proxy = await startProxy({ STITCH_API_KEY: "env-key", DEFAULT_STITCH_PROJECT_ID: "proj-1" });
+  const proxy = await startProxy({
+    STITCH_API_KEY: "env-key",
+    DEFAULT_STITCH_PROJECT_ID: "proj-1",
+  });
   t.after(() => proxy.stop());
 
   const response = await proxy.request("/health?verbose=1");
@@ -152,7 +158,10 @@ test("route: GET /instructions negotiates HTML, JSON and Markdown via Accept", a
 });
 
 test("route: log viewer endpoints are served while LOG_VIEWER_ENABLED is true", async (t) => {
-  const proxy = await startProxy({ LOG_VIEWER_ENABLED: true, LOG_DIR: "test/helpers/fixtures/logs" });
+  const proxy = await startProxy({
+    LOG_VIEWER_ENABLED: true,
+    LOG_DIR: "test/helpers/fixtures/logs",
+  });
   t.after(() => proxy.stop());
 
   const viewer = await proxy.request("/logs");
@@ -210,10 +219,12 @@ test("route: /mcp with an over-sized body returns 413 and -32003", async (t) => 
   const proxy = await startProxy({ MAX_BODY_SIZE_BYTES: 64, STITCH_API_KEY: "env-key" });
   t.after(() => proxy.stop());
 
-  const response = await proxy.postJson(
-    "/mcp",
-    { jsonrpc: "2.0", id: 1, method: "tools/list", params: { pad: "x".repeat(200) } },
-  );
+  const response = await proxy.postJson("/mcp", {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/list",
+    params: { pad: "x".repeat(200) },
+  });
   assert.equal(response.status, 413);
   const body = await readJson(response);
   assert.equal(body.error.code, -32003);
@@ -352,7 +363,10 @@ test("local fallback: a prompts/list notification is acknowledged with 202 and n
 });
 
 test("local fallback: disabled by an empty LOCAL_FALLBACK_METHODS, so the call is forwarded", async (t) => {
-  const upstream = await startFakeStitch({ type: "json", body: { jsonrpc: "2.0", id: 12, result: {} } });
+  const upstream = await startFakeStitch({
+    type: "json",
+    body: { jsonrpc: "2.0", id: 12, result: {} },
+  });
   const proxy = await startProxy({
     STITCH_URL: upstream.url,
     STITCH_API_KEY: "env-key",
@@ -475,7 +489,13 @@ test("CORS: preflight advertises the documented methods and headers", async (t) 
   assert.equal(response.headers.get("access-control-allow-methods"), "GET, POST, OPTIONS");
   assert.equal(response.headers.get("access-control-max-age"), "86400");
   const allowed = response.headers.get("access-control-allow-headers") || "";
-  for (const header of ["Content-Type", "Authorization", "STITCH_API_KEY", "X-Stitch-Api-Key", "Accept"]) {
+  for (const header of [
+    "Content-Type",
+    "Authorization",
+    "STITCH_API_KEY",
+    "X-Stitch-Api-Key",
+    "Accept",
+  ]) {
     assert.ok(allowed.includes(header), `preflight should allow ${header}`);
   }
 });

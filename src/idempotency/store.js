@@ -106,7 +106,11 @@ function createIdempotencyStore(config = {}) {
    * @returns {string}
    */
   const apiKeyHash = (apiKey) =>
-    crypto.createHash("sha256").update(salt).update(String(apiKey ?? "")).digest("hex");
+    crypto
+      .createHash("sha256")
+      .update(salt)
+      .update(String(apiKey ?? ""))
+      .digest("hex");
 
   /**
    * Stable identity for "the same operation".

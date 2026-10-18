@@ -7,23 +7,23 @@
 
 ## 1. Current phase / step / status
 
-| Field | Value |
-|---|---|
-| Phase | **3 — Idempotency, retry safety and duplicate suppression**, in progress |
-| Step | 3.1–3.6 and 3.9 done. Remaining: 3.7 cancellation for safe in-flight (P5), 3.8 store hygiene metrics, 3.10 `tools/list` caching |
-| Status | Gates green: 228 tests → **212 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
-| Started | 2026-10-17 |
+| Field   | Value                                                                                                                           |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Phase   | **3 — Idempotency, retry safety and duplicate suppression**, in progress                                                        |
+| Step    | 3.1–3.6 and 3.9 done. Remaining: 3.7 cancellation for safe in-flight (P5), 3.8 store hygiene metrics, 3.10 `tools/list` caching |
+| Status  | Gates green: 228 tests → **212 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0                 |
+| Started | 2026-10-17                                                                                                                      |
 
 ## 2. Last green commit
 
-| Field | Value |
-|---|---|
-| SHA | **`4a4e810`** — `test: cover explicit idempotency keys end to end (phase 3)` |
-| test | 220 pass / 16 todo / 0 fail (236 tests) |
-| lint | clean |
-| typecheck | clean |
-| verify | `npm run verify` exits 0 |
-| run.sh | starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit |
+| Field     | Value                                                                        |
+| --------- | ---------------------------------------------------------------------------- |
+| SHA       | **`4a4e810`** — `test: cover explicit idempotency keys end to end (phase 3)` |
+| test      | 220 pass / 16 todo / 0 fail (236 tests)                                      |
+| lint      | clean                                                                        |
+| typecheck | clean                                                                        |
+| verify    | `npm run verify` exits 0                                                     |
+| run.sh    | starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit                          |
 
 ## 3. Phase checklist
 
@@ -43,21 +43,21 @@
 
 ## 4. Environment facts (verified 2026-10-17)
 
-| Fact | Value |
-|---|---|
-| Node (local) | `v26.3.0` |
-| npm (local) | `9.2.0` |
-| `AbortSignal.any` | ✅ function (Node ≥ 20.3) |
-| `AbortSignal.timeout` | ✅ function |
-| `Readable.fromWeb` | ✅ function |
-| `stream/promises.pipeline` | ✅ function |
-| `server.closeIdleConnections` | ✅ function |
-| `server.requestTimeout` default | `300000` |
-| `server.headersTimeout` default | `60000` |
-| `server.keepAliveTimeout` default | `5000` |
-| `--experimental-test-coverage` | ✅ works on Node 26 |
-| **`engines.node` decision** | `>=20.3.0` (first version with `AbortSignal.any`) |
-| **CI matrix** | 20 / 22 / 24 |
+| Fact                              | Value                                             |
+| --------------------------------- | ------------------------------------------------- |
+| Node (local)                      | `v26.3.0`                                         |
+| npm (local)                       | `9.2.0`                                           |
+| `AbortSignal.any`                 | ✅ function (Node ≥ 20.3)                         |
+| `AbortSignal.timeout`             | ✅ function                                       |
+| `Readable.fromWeb`                | ✅ function                                       |
+| `stream/promises.pipeline`        | ✅ function                                       |
+| `server.closeIdleConnections`     | ✅ function                                       |
+| `server.requestTimeout` default   | `300000`                                          |
+| `server.headersTimeout` default   | `60000`                                           |
+| `server.keepAliveTimeout` default | `5000`                                            |
+| `--experimental-test-coverage`    | ✅ works on Node 26                               |
+| **`engines.node` decision**       | `>=20.3.0` (first version with `AbortSignal.any`) |
+| **CI matrix**                     | 20 / 22 / 24                                      |
 
 > **context7 was unavailable** during this session (API key rejected: `Invalid API key`).
 > Per prime directive #3, protocol facts were verified against the **spec source text** in
@@ -67,43 +67,43 @@
 
 ## 5. Route inventory (baseline, verified by reading `index.js` @ `2578c26`)
 
-| Route | Methods | Behaviour | Auth |
-|---|---|---|---|
-| `/mcp` | POST | Forward to Stitch (retries, fallbacks, streaming) | none |
-| `/mcp` | GET | 405 `-32005` "no SSE stream offered" + `Allow: POST, OPTIONS` | none |
-| `/mcp` | DELETE | 405 `-32005` "stateless" + `Allow` | none |
-| `/mcp` | PUT/PATCH/HEAD | 405 `-32005` | none |
-| `/mcp` | OPTIONS | 204 (generic preflight, before routing) | none |
-| `/health` | GET | Fat JSON: proxy cfg, credentials, logging, resilience, metrics | **none** |
-| `/metrics` | GET | Prometheus text (`METRICS_ENABLED`, default true) | **none** |
-| `/instructions` | GET | HTML / JSON / Markdown by `Accept` | **none** |
-| `/logs` | GET | Log viewer HTML (`LOG_VIEWER_ENABLED`, default true) | **none** |
-| `/api/logs` | GET | Project tree + summary-log stat | **none** |
-| `/api/logs/summary` | GET | Paged summary lines (`limit`, `offset`) | **none** |
-| `/api/logs/{projectId}/{file}` | GET | Raw log file text | **none** |
-| `/.well-known/oauth-protected-resource` | GET | Static stub, hardcodes `http://localhost:${port}` | **none** |
-| `/.well-known/openid-configuration` | GET | Static stub, hardcodes `http://localhost:${port}` | **none** |
-| `/auth` | GET | `200 "OK"` | **none** |
-| `/token` | POST | `{"access_token":"local-proxy-token"}` — **static, anyone** | **none** |
-| anything else | any | 404 `-32601` | none |
+| Route                                   | Methods        | Behaviour                                                      | Auth     |
+| --------------------------------------- | -------------- | -------------------------------------------------------------- | -------- |
+| `/mcp`                                  | POST           | Forward to Stitch (retries, fallbacks, streaming)              | none     |
+| `/mcp`                                  | GET            | 405 `-32005` "no SSE stream offered" + `Allow: POST, OPTIONS`  | none     |
+| `/mcp`                                  | DELETE         | 405 `-32005` "stateless" + `Allow`                             | none     |
+| `/mcp`                                  | PUT/PATCH/HEAD | 405 `-32005`                                                   | none     |
+| `/mcp`                                  | OPTIONS        | 204 (generic preflight, before routing)                        | none     |
+| `/health`                               | GET            | Fat JSON: proxy cfg, credentials, logging, resilience, metrics | **none** |
+| `/metrics`                              | GET            | Prometheus text (`METRICS_ENABLED`, default true)              | **none** |
+| `/instructions`                         | GET            | HTML / JSON / Markdown by `Accept`                             | **none** |
+| `/logs`                                 | GET            | Log viewer HTML (`LOG_VIEWER_ENABLED`, default true)           | **none** |
+| `/api/logs`                             | GET            | Project tree + summary-log stat                                | **none** |
+| `/api/logs/summary`                     | GET            | Paged summary lines (`limit`, `offset`)                        | **none** |
+| `/api/logs/{projectId}/{file}`          | GET            | Raw log file text                                              | **none** |
+| `/.well-known/oauth-protected-resource` | GET            | Static stub, hardcodes `http://localhost:${port}`              | **none** |
+| `/.well-known/openid-configuration`     | GET            | Static stub, hardcodes `http://localhost:${port}`              | **none** |
+| `/auth`                                 | GET            | `200 "OK"`                                                     | **none** |
+| `/token`                                | POST           | `{"access_token":"local-proxy-token"}` — **static, anyone**    | **none** |
+| anything else                           | any            | 404 `-32601`                                                   | none     |
 
-Ordering note: `OPTIONS` is handled **before** routing, so it returns 204 for *every* path with CORS `*`.
+Ordering note: `OPTIONS` is handled **before** routing, so it returns 204 for _every_ path with CORS `*`.
 The `/logs*` disabled check happens before the viewer routes but after `/mcp` guard is entered only for `/mcp`.
 
 ### JSON-RPC error codes emitted by the proxy
 
-| Code | Meaning | Where |
-|---|---|---|
-| `-32001` | Invalid Origin header (403) | `validateOrigin` failure |
-| `-32002` | Rate limit exceeded (429) | token bucket |
-| `-32003` | Request body too large (413) | body reader |
-| `-32004` | Upstream request timed out (504) | catch, `AbortError`/`TimeoutError` |
-| `-32005` | Method not allowed on `/mcp` (405) | GET/DELETE/other |
-| `-32006` | Upstream request to Stitch failed (502) | catch, generic |
-| `-32007` | Missing API key (401) | credential check |
-| `-32601` | Not found (404) | fallthrough (also spec's "Method not found") |
-| _reserved new_ | `-32008` (proposed) | unsafe call, outcome unknown — see ADR 0003 |
-| _spec_ | `-32020` | `HeaderMismatch` (2026-07-28 spec) — not emitted by proxy |
+| Code           | Meaning                                 | Where                                                     |
+| -------------- | --------------------------------------- | --------------------------------------------------------- |
+| `-32001`       | Invalid Origin header (403)             | `validateOrigin` failure                                  |
+| `-32002`       | Rate limit exceeded (429)               | token bucket                                              |
+| `-32003`       | Request body too large (413)            | body reader                                               |
+| `-32004`       | Upstream request timed out (504)        | catch, `AbortError`/`TimeoutError`                        |
+| `-32005`       | Method not allowed on `/mcp` (405)      | GET/DELETE/other                                          |
+| `-32006`       | Upstream request to Stitch failed (502) | catch, generic                                            |
+| `-32007`       | Missing API key (401)                   | credential check                                          |
+| `-32601`       | Not found (404)                         | fallthrough (also spec's "Method not found")              |
+| _reserved new_ | `-32008` (proposed)                     | unsafe call, outcome unknown — see ADR 0003               |
+| _spec_         | `-32020`                                | `HeaderMismatch` (2026-07-28 spec) — not emitted by proxy |
 
 ### Prometheus metric names (must never be renamed)
 
@@ -122,86 +122,86 @@ are the Phase 5 values, which encode the owner decisions in §12.
 
 ### Server and upstream
 
-| Var | Default | Notes |
-|---|---|---|
-| `MCP_SERVER_PORT` | `8787` | `.env.example` uses `8787`; the README historically showed 11401 |
-| `MCP_SERVER_HOST` | `0.0.0.0` | **owner decision 1** — LAN reachable |
-| `STITCH_URL` | `https://stitch.googleapis.com/mcp` | |
-| `STITCH_API_KEY` | _(unset)_ | env fallback credential |
-| `STITCH_PROJECT_ID` | _(unset)_ | used for log attribution and `X-Stitch-Project-Id` |
-| `ENABLE_GCLOUD_FALLBACK` | `0` | `gcloud auth print-access-token` |
+| Var                      | Default                             | Notes                                                            |
+| ------------------------ | ----------------------------------- | ---------------------------------------------------------------- |
+| `MCP_SERVER_PORT`        | `8787`                              | `.env.example` uses `8787`; the README historically showed 11401 |
+| `MCP_SERVER_HOST`        | `0.0.0.0`                           | **owner decision 1** — LAN reachable                             |
+| `STITCH_URL`             | `https://stitch.googleapis.com/mcp` |                                                                  |
+| `STITCH_API_KEY`         | _(unset)_                           | env fallback credential                                          |
+| `STITCH_PROJECT_ID`      | _(unset)_                           | used for log attribution and `X-Stitch-Project-Id`               |
+| `ENABLE_GCLOUD_FALLBACK` | `0`                                 | `gcloud auth print-access-token`                                 |
 
 ### Request handling and streaming
 
-| Var | Default | Notes |
-|---|---|---|
-| `REQUEST_TIMEOUT_MS` | `120000` | upstream **headers** deadline |
-| `MAX_BODY_SIZE_BYTES` | `10485760` | enforced before the credential check (★N2) |
-| `SERVER_HEADERS_TIMEOUT_MS` | `60000` | explicit socket timeout (★S6) |
-| `SERVER_KEEP_ALIVE_TIMEOUT_MS` | `5000` | explicit socket timeout (★S6) |
-| `SHUTDOWN_DRAIN_MS` | `15000` | graceful drain budget |
-| `STREAM_IDLE_TIMEOUT_MS` | `60000` | longest silence between chunks (★S1) |
-| `STREAM_MAX_DURATION_MS` | `1800000` | absolute stream cap (★S1) |
+| Var                            | Default    | Notes                                      |
+| ------------------------------ | ---------- | ------------------------------------------ |
+| `REQUEST_TIMEOUT_MS`           | `120000`   | upstream **headers** deadline              |
+| `MAX_BODY_SIZE_BYTES`          | `10485760` | enforced before the credential check (★N2) |
+| `SERVER_HEADERS_TIMEOUT_MS`    | `60000`    | explicit socket timeout (★S6)              |
+| `SERVER_KEEP_ALIVE_TIMEOUT_MS` | `5000`     | explicit socket timeout (★S6)              |
+| `SHUTDOWN_DRAIN_MS`            | `15000`    | graceful drain budget                      |
+| `STREAM_IDLE_TIMEOUT_MS`       | `60000`    | longest silence between chunks (★S1)       |
+| `STREAM_MAX_DURATION_MS`       | `1800000`  | absolute stream cap (★S1)                  |
 
 ### Resilience
 
-| Var | Default | Notes |
-|---|---|---|
-| `UPSTREAM_RETRY_ENABLED` | `true` | |
-| `UPSTREAM_RETRY_ATTEMPTS` | `3` | |
-| `UPSTREAM_RETRY_BASE_DELAY_MS` | `250` | full-jitter backoff base |
-| `MAX_CONCURRENT_UPSTREAM` | `32` | 0 disables the cap (★S6) |
-| `CONCURRENCY_QUEUE_WAIT_MS` | `10000` | then `503` + `Retry-After` |
-| `LOCAL_FALLBACK_METHODS` | `prompts/list` | |
-| `SAFE_TOOLS` | _(empty)_ | extra read-only tools; overrides the built-in table |
-| `UNSAFE_TOOLS` | _(empty)_ | force tools to unsafe so they are never retried |
+| Var                            | Default        | Notes                                               |
+| ------------------------------ | -------------- | --------------------------------------------------- |
+| `UPSTREAM_RETRY_ENABLED`       | `true`         |                                                     |
+| `UPSTREAM_RETRY_ATTEMPTS`      | `3`            |                                                     |
+| `UPSTREAM_RETRY_BASE_DELAY_MS` | `250`          | full-jitter backoff base                            |
+| `MAX_CONCURRENT_UPSTREAM`      | `32`           | 0 disables the cap (★S6)                            |
+| `CONCURRENCY_QUEUE_WAIT_MS`    | `10000`        | then `503` + `Retry-After`                          |
+| `LOCAL_FALLBACK_METHODS`       | `prompts/list` |                                                     |
+| `SAFE_TOOLS`                   | _(empty)_      | extra read-only tools; overrides the built-in table |
+| `UNSAFE_TOOLS`                 | _(empty)_      | force tools to unsafe so they are never retried     |
 
 ### Idempotency (ADR 0003)
 
-| Var | Default | Notes |
-|---|---|---|
-| `UNSAFE_MAX_DURATION_MS` | `600000` | **owner decision 4** — 10 min background limit |
-| `REPLAY_WINDOW_MS` | `600000` | **owner decision 4** — 10 min replay window |
-| `REPLAY_MAX_ENTRIES` | `200` | LRU cap |
-| `REPLAY_MAX_TOTAL_BYTES` | `33554432` | byte cap |
-| `ANNOTATE_TOOLS` | `true` | inject `readOnlyHint`/`destructiveHint` into `tools/list` |
+| Var                      | Default    | Notes                                                     |
+| ------------------------ | ---------- | --------------------------------------------------------- |
+| `UNSAFE_MAX_DURATION_MS` | `600000`   | **owner decision 4** — 10 min background limit            |
+| `REPLAY_WINDOW_MS`       | `600000`   | **owner decision 4** — 10 min replay window               |
+| `REPLAY_MAX_ENTRIES`     | `200`      | LRU cap                                                   |
+| `REPLAY_MAX_TOTAL_BYTES` | `33554432` | byte cap                                                  |
+| `ANNOTATE_TOOLS`         | `true`     | inject `readOnlyHint`/`destructiveHint` into `tools/list` |
 
 ### Security (ADR 0005)
 
-| Var | Default | Notes |
-|---|---|---|
-| `CORS_ORIGIN` | _(empty)_ | **owner decision 2** — no wildcard; private-network origins only. `*` opts back in |
-| `ALLOWED_ORIGINS` | _(empty)_ | extra origins beyond the private-network default |
-| `ALLOWED_HOSTS` | _(empty)_ | extra Host values; `*` accepts any Host |
-| `TRUST_PROXY` | `false` | trust `X-Forwarded-For` (★N4) |
-| `RATE_LIMIT_ENABLED` | `true` | **owner decision 5** |
-| `RATE_LIMIT_MAX_RPS` | `100` | **owner decision 5** — generous |
-| `RATE_LIMIT_BURST` | `200` | **owner decision 5** — generous |
+| Var                  | Default   | Notes                                                                              |
+| -------------------- | --------- | ---------------------------------------------------------------------------------- |
+| `CORS_ORIGIN`        | _(empty)_ | **owner decision 2** — no wildcard; private-network origins only. `*` opts back in |
+| `ALLOWED_ORIGINS`    | _(empty)_ | extra origins beyond the private-network default                                   |
+| `ALLOWED_HOSTS`      | _(empty)_ | extra Host values; `*` accepts any Host                                            |
+| `TRUST_PROXY`        | `false`   | trust `X-Forwarded-For` (★N4)                                                      |
+| `RATE_LIMIT_ENABLED` | `true`    | **owner decision 5**                                                               |
+| `RATE_LIMIT_MAX_RPS` | `100`     | **owner decision 5** — generous                                                    |
+| `RATE_LIMIT_BURST`   | `200`     | **owner decision 5** — generous                                                    |
 
 ### Metrics and logging
 
-| Var | Default | Notes |
-|---|---|---|
-| `METRICS_ENABLED` | `true` | |
-| `LOG_ENABLED` | `false` | `.env.example` ships `true` for a dev box |
-| `LOG_LEVEL` | `info` | `debug` adds per-request files and stream capture |
-| `LOG_DIR` | `logs` | resolved against the process CWD (known issue) |
-| `LOG_FILE_NAME` | `proxy.log` | |
-| `LOG_MAX_BODY_CHARS` | `20000` | also caps stream capture (★S3) |
-| `LOG_MAX_FILE_SIZE_BYTES` | `5242880` | |
-| `LOG_MAX_ROTATED_FILES` | `5` | |
-| `LOG_SKIP_MCP_GET` | `true` | |
-| `LOG_SKIP_MCP_METHODS` | `initialize,notifications/initialized,notifications/progress,ping` | |
-| `LOG_SLOW_REQUEST_MS` | `2000` | |
-| `LOG_VERY_SLOW_REQUEST_MS` | `5000` | |
-| `LOG_VIEWER_ENABLED` | `true` | now covers `/api/logs*` too (★N1) |
-| `LOG_VIEWER_MAX_FILE_BYTES` | `10485760` | |
-| `LOG_SUMMARY_MAX_LINES` | `200` | |
+| Var                         | Default                                                            | Notes                                             |
+| --------------------------- | ------------------------------------------------------------------ | ------------------------------------------------- |
+| `METRICS_ENABLED`           | `true`                                                             |                                                   |
+| `LOG_ENABLED`               | `false`                                                            | `.env.example` ships `true` for a dev box         |
+| `LOG_LEVEL`                 | `info`                                                             | `debug` adds per-request files and stream capture |
+| `LOG_DIR`                   | `logs`                                                             | resolved against the process CWD (known issue)    |
+| `LOG_FILE_NAME`             | `proxy.log`                                                        |                                                   |
+| `LOG_MAX_BODY_CHARS`        | `20000`                                                            | also caps stream capture (★S3)                    |
+| `LOG_MAX_FILE_SIZE_BYTES`   | `5242880`                                                          |                                                   |
+| `LOG_MAX_ROTATED_FILES`     | `5`                                                                |                                                   |
+| `LOG_SKIP_MCP_GET`          | `true`                                                             |                                                   |
+| `LOG_SKIP_MCP_METHODS`      | `initialize,notifications/initialized,notifications/progress,ping` |                                                   |
+| `LOG_SLOW_REQUEST_MS`       | `2000`                                                             |                                                   |
+| `LOG_VERY_SLOW_REQUEST_MS`  | `5000`                                                             |                                                   |
+| `LOG_VIEWER_ENABLED`        | `true`                                                             | now covers `/api/logs*` too (★N1)                 |
+| `LOG_VIEWER_MAX_FILE_BYTES` | `10485760`                                                         |                                                   |
+| `LOG_SUMMARY_MAX_LINES`     | `200`                                                              |                                                   |
 
 ### Removed
 
-| Var | Why |
-|---|---|
+| Var                             | Why                                                                                                                                            |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ALLOW_ENV_API_KEY_FOR_BROWSER` | Removed in Phase 5. The origin allow-list refuses the public internet before credentials are considered, so the knob had no remaining meaning. |
 
 ---
@@ -211,40 +211,43 @@ are the Phase 5 values, which encode the owner decisions in §12.
 Classification decides **retry safety**, **in-flight coalescing**, **orphan capture** and
 **annotation injection**. Unknown ⇒ **unsafe**.
 
-| Class | JSON-RPC method / tool | Rationale |
-|---|---|---|
-| safe | `initialize` | version negotiation, no side effects |
-| safe | `ping` | liveness |
-| safe | `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list` | discovery |
-| safe | `notifications/initialized`, `notifications/progress`, `notifications/cancelled` | no upstream effect |
-| safe | `tools/call` → `list_projects` | read |
-| safe | `tools/call` → `get_project` | read |
-| safe | `tools/call` → `list_screens` | read |
-| safe | `tools/call` → `get_screen` | read |
-| safe | `tools/call` → `list_design_systems` | read |
-| unsafe | `tools/call` → `create_project` | creates a project (quota) |
-| unsafe | `tools/call` → `create_design_system` | creates assets |
-| unsafe | `tools/call` → `update_design_system` | mutates |
-| unsafe | `tools/call` → `apply_design_system` | mutates |
-| unsafe | `tools/call` → `create_screen` | creates a screen |
-| unsafe | `tools/call` → `edit_screens` | mutates screens |
-| unsafe | `tools/call` → `generate_screen_from_text` | generation quota |
-| unsafe | `tools/call` → `generate_variants` | generation quota |
-| unsafe | **any unknown tool** | conservative default |
-| unsafe | **any JSON-RPC array (batch)** | most-unsafe element wins |
+| Class  | JSON-RPC method / tool                                                           | Rationale                            |
+| ------ | -------------------------------------------------------------------------------- | ------------------------------------ |
+| safe   | `initialize`                                                                     | version negotiation, no side effects |
+| safe   | `ping`                                                                           | liveness                             |
+| safe   | `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`       | discovery                            |
+| safe   | `notifications/initialized`, `notifications/progress`, `notifications/cancelled` | no upstream effect                   |
+| safe   | `tools/call` → `list_projects`                                                   | read                                 |
+| safe   | `tools/call` → `get_project`                                                     | read                                 |
+| safe   | `tools/call` → `list_screens`                                                    | read                                 |
+| safe   | `tools/call` → `get_screen`                                                      | read                                 |
+| safe   | `tools/call` → `list_design_systems`                                             | read                                 |
+| unsafe | `tools/call` → `create_project`                                                  | creates a project (quota)            |
+| unsafe | `tools/call` → `create_design_system`                                            | creates assets                       |
+| unsafe | `tools/call` → `update_design_system`                                            | mutates                              |
+| unsafe | `tools/call` → `apply_design_system`                                             | mutates                              |
+| unsafe | `tools/call` → `create_screen`                                                   | creates a screen                     |
+| unsafe | `tools/call` → `edit_screens`                                                    | mutates screens                      |
+| unsafe | `tools/call` → `generate_screen_from_text`                                       | generation quota                     |
+| unsafe | `tools/call` → `generate_variants`                                               | generation quota                     |
+| unsafe | **any unknown tool**                                                             | conservative default                 |
+| unsafe | **any JSON-RPC array (batch)**                                                   | most-unsafe element wins             |
 
 ---
 
 ## 8. Decisions (ADRs)
 
-| ADR | Title | Status |
-|---|---|---|
+| ADR                                                | Title                                         | Status                 |
+| -------------------------------------------------- | --------------------------------------------- | ---------------------- |
 | [0001](docs/adr/0001-language-and-typechecking.md) | Language & type checking: keep JS + `checkJs` | **Accepted** (Phase 0) |
-| [0002](docs/adr/0002-module-layout.md) | Module layout | **Accepted** (Phase 2) |
-| [0003](docs/adr/0003-idempotency.md) | Idempotency & retry safety | **Accepted** (Phase 3) |
-| 0004 | Streaming | Phase 4 |
-| 0005 | Security model | Phase 5 |
-| 0006 | Tooling & CI | Phase 7 |
+| [0002](docs/adr/0002-module-layout.md)             | Module layout                                 | **Accepted** (Phase 2) |
+| [0003](docs/adr/0003-idempotency.md)               | Idempotency & retry safety                    | **Accepted** (Phase 3) |
+| [0004](docs/adr/0004-streaming.md)                 | Streaming and upstream I/O                    | **Accepted** (Phase 4) |
+| [0005](docs/adr/0005-security.md)                  | Security model                                | **Accepted** (Phase 5) |
+| [0006](docs/adr/0006-tooling.md)                   | Tooling and CI                                | **Accepted** (Phase 7) |
+| 0004                                               | Streaming                                     | Phase 4                |
+| 0005                                               | Security model                                | Phase 5                |
+| 0006                                               | Tooling & CI                                  | Phase 7                |
 
 See **[ADR 0001](docs/adr/0001-language-and-typechecking.md)** — accepted in Phase 0: keep
 CommonJS JavaScript with `// @ts-check` + JSDoc and `tsc --noEmit --checkJs`, rather than
@@ -280,7 +283,7 @@ Source: `modelcontextprotocol/modelcontextprotocol`, `docs/specification/**`, `s
 - SSE responses **SHOULD** carry `X-Accel-Buffering: no`.
 - **Removed in 2026-07-28:** GET stream endpoint, `Mcp-Session-Id` sessions + DELETE,
   resumable streams via `Last-Event-ID`, `notifications/cancelled` over Streamable HTTP
-  (closing the SSE stream *is* the cancellation signal).
+  (closing the SSE stream _is_ the cancellation signal).
 
 ### Backward compatibility (what a proxy must tolerate)
 
@@ -297,16 +300,16 @@ Source: `modelcontextprotocol/modelcontextprotocol`, `docs/specification/**`, `s
 
 ### Tool annotations (`ToolAnnotations`)
 
-All properties are **hints**, and the spec explicitly warns: *"Clients should never make tool use
-decisions based on `ToolAnnotations` received from untrusted servers."*
+All properties are **hints**, and the spec explicitly warns: _"Clients should never make tool use
+decisions based on `ToolAnnotations` received from untrusted servers."_
 
-| Field | Default | Meaning |
-|---|---|---|
-| `title` | — | human-readable title |
-| `readOnlyHint` | `false` | tool does not modify its environment |
-| `destructiveHint` | `true` | may perform destructive updates (only meaningful when `readOnlyHint === false`) |
-| `idempotentHint` | `false` | repeating with same args has no additional effect |
-| `openWorldHint` | `true` | may interact with an open world of external entities |
+| Field             | Default | Meaning                                                                         |
+| ----------------- | ------- | ------------------------------------------------------------------------------- |
+| `title`           | —       | human-readable title                                                            |
+| `readOnlyHint`    | `false` | tool does not modify its environment                                            |
+| `destructiveHint` | `true`  | may perform destructive updates (only meaningful when `readOnlyHint === false`) |
+| `idempotentHint`  | `false` | repeating with same args has no additional effect                               |
+| `openWorldHint`   | `true`  | may interact with an open world of external entities                            |
 
 Display-name precedence: `title`, then `annotations.title`, then `name`.
 
@@ -332,53 +335,53 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 
 ### 10.1 Critical
 
-| ID | Reproduced | Evidence (actual observed output) | Regression test |
-|---|---|---|---|
-| ★C1 | ✅ **YES** (fixed) | Fake upstream that resets the socket after receiving a `tools/call create_project`: upstream **received `create_project` 3 times** (`{"count":3,...}`). Client got `502 {"code":-32006,"message":"...fetch failed (ECONNRESET)"}`. | **FIXED `b96e3e7`** — 12 end-to-end tests in `test/phase3.test.js`; upstream now receives it **exactly once** and the client gets `-32008` |
-| ★C2 | ✅ **YES** | `printf 'GET /health HTTP/1.1\r\nHost: [bad\r\n\r\n' \| nc 127.0.0.1 8799` ⇒ process **died** (`ERR_INVALID_URL`, `base: 'http://[bad'`, `Node.js v26.3.0` on stdout, port no longer listening). | **FIXED `dfd243c`** — 6 tests in `test/phase1.test.js`; verified with 50 malformed Hosts in a row |
-| ★C3 | ✅ **YES** (read path proven; write path follows from identical code) | Preflight/actual request from `Origin: https://evil.example` ⇒ `Access-Control-Allow-Origin: *`; `POST /token` with **no credentials** ⇒ `{"access_token":"local-proxy-token"}`. | → Phase 5 |
-| ★C4 | ✅ **YES** | `GET /api/logs` with `Origin: https://evil.example` ⇒ **200** + `access-control-allow-origin: *` (log dir listing, project IDs, sizes). `/health` also 200 with no auth. | → Phase 5 |
-| ★C5 | ✅ **YES** | **NEW (found in Phase 0).** A normal streamed (SSE) response **crashes the process**. The streaming branch ends without a `return`, so control falls through to the trailing `sendJson(res, 404, …)`, which throws `ERR_HTTP_HEADERS_SENT` as an unhandled rejection. Reproduced against a baseline worktree at `2578c26`: one POST that received `Content-Type: text/event-stream` ⇒ `throw new ERR_HTTP_HEADERS_SENT('write')` at `index.js:1849` ⇒ process gone (port refused afterwards). Every real Stitch call that streams would kill the proxy. | **Fixed in Phase 0** (missing `return`); regression test `★C5` is active and passing. |
+| ID  | Reproduced                                                            | Evidence (actual observed output)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Regression test                                                                                                                            |
+| --- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| ★C1 | ✅ **YES** (fixed)                                                    | Fake upstream that resets the socket after receiving a `tools/call create_project`: upstream **received `create_project` 3 times** (`{"count":3,...}`). Client got `502 {"code":-32006,"message":"...fetch failed (ECONNRESET)"}`.                                                                                                                                                                                                                                                                                                                      | **FIXED `b96e3e7`** — 12 end-to-end tests in `test/phase3.test.js`; upstream now receives it **exactly once** and the client gets `-32008` |
+| ★C2 | ✅ **YES**                                                            | `printf 'GET /health HTTP/1.1\r\nHost: [bad\r\n\r\n' \| nc 127.0.0.1 8799` ⇒ process **died** (`ERR_INVALID_URL`, `base: 'http://[bad'`, `Node.js v26.3.0` on stdout, port no longer listening).                                                                                                                                                                                                                                                                                                                                                        | **FIXED `dfd243c`** — 6 tests in `test/phase1.test.js`; verified with 50 malformed Hosts in a row                                          |
+| ★C3 | ✅ **YES** (read path proven; write path follows from identical code) | Preflight/actual request from `Origin: https://evil.example` ⇒ `Access-Control-Allow-Origin: *`; `POST /token` with **no credentials** ⇒ `{"access_token":"local-proxy-token"}`.                                                                                                                                                                                                                                                                                                                                                                        | → Phase 5                                                                                                                                  |
+| ★C4 | ✅ **YES**                                                            | `GET /api/logs` with `Origin: https://evil.example` ⇒ **200** + `access-control-allow-origin: *` (log dir listing, project IDs, sizes). `/health` also 200 with no auth.                                                                                                                                                                                                                                                                                                                                                                                | → Phase 5                                                                                                                                  |
+| ★C5 | ✅ **YES**                                                            | **NEW (found in Phase 0).** A normal streamed (SSE) response **crashes the process**. The streaming branch ends without a `return`, so control falls through to the trailing `sendJson(res, 404, …)`, which throws `ERR_HTTP_HEADERS_SENT` as an unhandled rejection. Reproduced against a baseline worktree at `2578c26`: one POST that received `Content-Type: text/event-stream` ⇒ `throw new ERR_HTTP_HEADERS_SENT('write')` at `index.js:1849` ⇒ process gone (port refused afterwards). Every real Stitch call that streams would kill the proxy. | **Fixed in Phase 0** (missing `return`); regression test `★C5` is active and passing.                                                      |
 
 ### 10.2 Protocol correctness
 
-| ID | Reproduced | Evidence | Regression test |
-|---|---|---|---|
-| ★P1 | ✅ **YES** | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS). | **FIXED `dfd243c`** — 5 tests; explicit request/response allow-lists |
-| ★P2 | ✅ **YES** | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths. | **FIXED `dfd243c`** — 7 tests incl. `id:0`, string ids and arrays |
-| P3 | read-only | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element. | **FIXED `b96e3e7`** — `classifyRequest` reduces a batch to its most unsafe element, and `rewriteJsonRpcId` handles arrays |
-| P4 | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. Whether Stitch implements the others is **unknown** → `scripts/live-probe.js` (Phase 7), owner key required. | Phase 7 |
-| P5 | read-only | `notifications/cancelled` is forwarded upstream but never aborts the in-flight upstream request. Note: on Streamable HTTP ≥ 2026-07-28 cancellation *is* stream closure, so the proxy's own client-close handling is the primary mechanism. | Phase 3 |
+| ID  | Reproduced     | Evidence                                                                                                                                                                                                                                                                                                                                                                                                          | Regression test                                                                                                           |
+| --- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| ★P1 | ✅ **YES**     | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS). | **FIXED `dfd243c`** — 5 tests; explicit request/response allow-lists                                                      |
+| ★P2 | ✅ **YES**     | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths.                                                                                                                                                                                                                                                      | **FIXED `dfd243c`** — 7 tests incl. `id:0`, string ids and arrays                                                         |
+| P3  | read-only      | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element.                                                                                                                                       | **FIXED `b96e3e7`** — `classifyRequest` reduces a batch to its most unsafe element, and `rewriteJsonRpcId` handles arrays |
+| P4  | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. Whether Stitch implements the others is **unknown** → `scripts/live-probe.js` (Phase 7), owner key required.                                                                                                                                                        | Phase 7                                                                                                                   |
+| P5  | read-only      | `notifications/cancelled` is forwarded upstream but never aborts the in-flight upstream request. Note: on Streamable HTTP ≥ 2026-07-28 cancellation _is_ stream closure, so the proxy's own client-close handling is the primary mechanism.                                                                                                                                                                       | Phase 3                                                                                                                   |
 
 ### 10.3 Streaming and resource handling
 
-| ID | Reproduced | Evidence | Regression test |
-|---|---|---|---|
-| ★S1 | ✅ **YES** | `REQUEST_TIMEOUT_MS=2000`; client POSTed at a never-ending SSE upstream and aborted at **600 ms**. At **+6.6 s** the upstream TCP connection was still `ESTAB` (`127.0.0.1:8812 ↔ 127.0.0.1:35890`), held open by the proxy. Neither the headers timeout nor the client-close listener aborted the body. | Phase 4 |
-| S2 | read-only | `res.write(chunk)` return value ignored in the stream loop ⇒ unbounded buffering for a slow client. | Phase 4 |
-| S3 | read-only | `const streamChunks = []` + `streamChunks.push(chunk)` run unconditionally, even when `LOG_ENABLED=false` or `LOG_LEVEL!=debug`. | Phase 4 |
-| ★S4 | ✅ **YES** | 12 sequential keep-alive requests on one socket ⇒ `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 close listeners added to [Socket].` | **FIXED `dfd243c`** — tracking moved to `server.on("connection")`; 40-request regression test |
-| S5 | read-only | `readSummaryLogLines()` → `fs.readFileSync` of the **whole** file; `appendSummaryLog` → `appendFileSync` + `statSync` + `renameSync`; `scanLogDirectory`/`readLogFile` → sync fs; `getAccessToken()` → `execSync("gcloud auth print-access-token")`. | Phase 4 |
-| S6 | read-only | `requestTimeout`/`headersTimeout`/`keepAliveTimeout` left at Node defaults (300 s/60 s/5 s); no cap on concurrent upstream requests. | Phase 4 |
+| ID  | Reproduced | Evidence                                                                                                                                                                                                                                                                                                 | Regression test                                                                               |
+| --- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| ★S1 | ✅ **YES** | `REQUEST_TIMEOUT_MS=2000`; client POSTed at a never-ending SSE upstream and aborted at **600 ms**. At **+6.6 s** the upstream TCP connection was still `ESTAB` (`127.0.0.1:8812 ↔ 127.0.0.1:35890`), held open by the proxy. Neither the headers timeout nor the client-close listener aborted the body. | Phase 4                                                                                       |
+| S2  | read-only  | `res.write(chunk)` return value ignored in the stream loop ⇒ unbounded buffering for a slow client.                                                                                                                                                                                                      | Phase 4                                                                                       |
+| S3  | read-only  | `const streamChunks = []` + `streamChunks.push(chunk)` run unconditionally, even when `LOG_ENABLED=false` or `LOG_LEVEL!=debug`.                                                                                                                                                                         | Phase 4                                                                                       |
+| ★S4 | ✅ **YES** | 12 sequential keep-alive requests on one socket ⇒ `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 close listeners added to [Socket].`                                                                                                                                       | **FIXED `dfd243c`** — tracking moved to `server.on("connection")`; 40-request regression test |
+| S5  | read-only  | `readSummaryLogLines()` → `fs.readFileSync` of the **whole** file; `appendSummaryLog` → `appendFileSync` + `statSync` + `renameSync`; `scanLogDirectory`/`readLogFile` → sync fs; `getAccessToken()` → `execSync("gcloud auth print-access-token")`.                                                     | Phase 4                                                                                       |
+| S6  | read-only  | `requestTimeout`/`headersTimeout`/`keepAliveTimeout` left at Node defaults (300 s/60 s/5 s); no cap on concurrent upstream requests.                                                                                                                                                                     | Phase 4                                                                                       |
 
 ### 10.4 Smaller bugs (all confirmed by reading `index.js`)
 
-| Bug | Location | Status |
-|---|---|---|
-| ★N3 `HEAD /health` ⇒ **404** (only `GET` matches) | `index.js:1978` | ✅ reproduced (`HEAD /health -> 404`, `GET /health -> 200`); **FIXED `dfd243c`** (also `/metrics`, `/instructions`) |
-| `getClientIp` trusts `X-Forwarded-For` unconditionally | `index.js:601` | confirmed |
-| Per-project debug logs use `DEFAULT_STITCH_PROJECT_ID`, never `params.arguments.projectId` | `index.js:794` callers | confirmed |
-| Catch-block debug log passes `requestBody: undefined` | `index.js:~2560` | confirmed |
-| `console.warn("No project ID configured…")` fires **every** request | `index.js:2273` | ✅ observed; **FIXED `dfd243c`** (once per process, ★N7) |
-| `test.sh` prints the API key | `test.sh:22` | confirmed |
-| `INSTRUCTIONS.md` / `LOG_DIR` resolve against `process.cwd()` | `index.js:44,53` | confirmed |
-| `.well-known` hardcodes `http://localhost:${port}` | `index.js:1955-1967` | confirmed |
-| `/token` hands out a static `local-proxy-token` to anyone | `index.js:1974` | ✅ reproduced |
-| Port inconsistency: code `8787`, `.env.example` `11401`, README mixes both | — | confirmed |
-| `STITCH_API_KEY` header underscore is dropped by nginx by default | README | documented in Phase 9 |
-| No `package.json`, `engines`, lint, tests or CI | — | fixed in Phase 0/7 |
-| ★N1 | The "log viewer disabled" guard is `url.pathname.startsWith("/logs")`, which never matches `/api/logs` or `/api/logs/summary` (or the file route). With `LOG_VIEWER_ENABLED=false` the HTML page 404s but the JSON APIs and raw log files stay reachable. | discovered in Phase 0 while writing characterization tests; pinned by `KNOWN GAP: /api/logs* is still served…`; fixed in Phase 5 |
-| ★N2 | The credential check ran **before** the body reader, so an unauthenticated over-sized body was answered `401` without ever being bounded/read — the 413 size limit was unreachable for unauthenticated callers. | **FIXED `dfd243c`** — body read first through a bounded reader |
+| Bug                                                                                        | Location                                                                                                                                                                                                                                                  | Status                                                                                                                           |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| ★N3 `HEAD /health` ⇒ **404** (only `GET` matches)                                          | `index.js:1978`                                                                                                                                                                                                                                           | ✅ reproduced (`HEAD /health -> 404`, `GET /health -> 200`); **FIXED `dfd243c`** (also `/metrics`, `/instructions`)              |
+| `getClientIp` trusts `X-Forwarded-For` unconditionally                                     | `index.js:601`                                                                                                                                                                                                                                            | confirmed                                                                                                                        |
+| Per-project debug logs use `DEFAULT_STITCH_PROJECT_ID`, never `params.arguments.projectId` | `index.js:794` callers                                                                                                                                                                                                                                    | confirmed                                                                                                                        |
+| Catch-block debug log passes `requestBody: undefined`                                      | `index.js:~2560`                                                                                                                                                                                                                                          | confirmed                                                                                                                        |
+| `console.warn("No project ID configured…")` fires **every** request                        | `index.js:2273`                                                                                                                                                                                                                                           | ✅ observed; **FIXED `dfd243c`** (once per process, ★N7)                                                                         |
+| `test.sh` prints the API key                                                               | `test.sh:22`                                                                                                                                                                                                                                              | confirmed                                                                                                                        |
+| `INSTRUCTIONS.md` / `LOG_DIR` resolve against `process.cwd()`                              | `index.js:44,53`                                                                                                                                                                                                                                          | confirmed                                                                                                                        |
+| `.well-known` hardcodes `http://localhost:${port}`                                         | `index.js:1955-1967`                                                                                                                                                                                                                                      | confirmed                                                                                                                        |
+| `/token` hands out a static `local-proxy-token` to anyone                                  | `index.js:1974`                                                                                                                                                                                                                                           | ✅ reproduced                                                                                                                    |
+| Port inconsistency: code `8787`, `.env.example` `11401`, README mixes both                 | —                                                                                                                                                                                                                                                         | confirmed                                                                                                                        |
+| `STITCH_API_KEY` header underscore is dropped by nginx by default                          | README                                                                                                                                                                                                                                                    | documented in Phase 9                                                                                                            |
+| No `package.json`, `engines`, lint, tests or CI                                            | —                                                                                                                                                                                                                                                         | fixed in Phase 0/7                                                                                                               |
+| ★N1                                                                                        | The "log viewer disabled" guard is `url.pathname.startsWith("/logs")`, which never matches `/api/logs` or `/api/logs/summary` (or the file route). With `LOG_VIEWER_ENABLED=false` the HTML page 404s but the JSON APIs and raw log files stay reachable. | discovered in Phase 0 while writing characterization tests; pinned by `KNOWN GAP: /api/logs* is still served…`; fixed in Phase 5 |
+| ★N2                                                                                        | The credential check ran **before** the body reader, so an unauthenticated over-sized body was answered `401` without ever being bounded/read — the 413 size limit was unreachable for unauthenticated callers.                                           | **FIXED `dfd243c`** — body read first through a bounded reader                                                                   |
 
 ### 10.5 Idempotency classes
 
@@ -391,18 +394,18 @@ no annotations to warn clients before unsafe calls.
 
 ## 11. Known issues / deferred
 
-| Issue | Why deferred |
-|---|---|
-| **context7 unavailable** (`Invalid API key`) | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored. |
-| P4 — unknown whether Stitch implements `resources/list` | Needs a live probe with the owner's key, which must be opt-in. |
-| Live `tools/list` annotations from Stitch are unknown | Classification currently relies on the built-in table; upstream annotations take precedence once observed. |
+| Issue                                                   | Why deferred                                                                                                |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **context7 unavailable** (`Invalid API key`)            | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored. |
+| P4 — unknown whether Stitch implements `resources/list` | Needs a live probe with the owner's key, which must be opt-in.                                              |
+| Live `tools/list` annotations from Stitch are unknown   | Classification currently relies on the built-in table; upstream annotations take precedence once observed.  |
 
 ## 12. Questions for the owner
 
 These are **irreversible / default-changing decisions** that will not be applied without an answer.
 Backward-compatible opt-in implementations proceed meanwhile.
 
-1. **Bind address.** Default `127.0.0.1` instead of `0.0.0.0`? (Spec says servers *SHOULD* bind loopback. LAN setups would need `MCP_SERVER_HOST=0.0.0.0`.)
+1. **Bind address.** Default `127.0.0.1` instead of `0.0.0.0`? (Spec says servers _SHOULD_ bind loopback. LAN setups would need `MCP_SERVER_HOST=0.0.0.0`.)
 2. **Origins + env key.** Default `ALLOWED_ORIGINS` no longer `*`, and stop the env-key fallback for browser-origin requests?
 3. **Proxy auth.** Require `PROXY_AUTH_TOKEN` (or refuse to start) when bound to a non-loopback address with an env API key configured?
 4. **Unsafe-call windows.** Orphaned-result replay window and max background duration (proposed **10 min / 10 min**)?
@@ -411,19 +414,19 @@ Backward-compatible opt-in implementations proceed meanwhile.
 
 ## 13. Phase 0 — what landed
 
-| Item | Detail |
-|---|---|
-| Branch | `hardening/v1` (from `main` @ `2578c26`) |
-| `package.json` | `private`, `type: commonjs`, `engines.node >=20.3.0`, scripts `start`/`test`/`test:coverage`/`lint`/`format`/`format:check`/`typecheck`/`verify`. **No runtime dependencies.** Dev-only: `eslint`, `@eslint/js`, `globals`, `prettier`, `typescript`, `@types/node`. |
-| `eslint.config.js` | Flat config, `js.configs.recommended` + node globals. `no-console` off, `no-unused-vars` strict with `^_` escape, `prefer-const` on. |
-| `tsconfig.json` | `allowJs` + `checkJs`, `noEmit`, `strict: false` (the baseline file is annotated only where it matters), `types: ["node"]`. |
-| `.prettierrc` | `printWidth: 100`, `proseWrap: preserve`. `index.js` is **not** reformatted (keeps the Phase 0 diff reviewable). |
-| **The seam** | `applyConfig(env, overrides)` + `resolveConfigFromEnv` + `CONFIG_KEYS` + `assignConfig` + `getConfig`; `createState()`; module-level `state` pointer holding `metrics`, `activeConnections`, `rateLimitBuckets`, `tokenCache`, `isShuttingDown`, `warnings`; `handleRequest(req, res)`; `createProxyServer(options)`; `logStartupBanner()`; `logCredentialGuidance()`. `listen()` now happens **only** when `require.main === module`. |
-| Deliberate Phase 0 behaviour fixes | (a) ★C5 missing `return` in the streaming branch — this was a process-killing crash; (b) the two credential guidance messages moved from module load to the entry point so they no longer print before the config is resolved; (c) `let projectId` → `const projectId` (never reassigned); (d) ESLint-driven cleanups (`for…of Object.keys`, regex disables, exported `readRequestBody`). |
-| Harness | `test/helpers/fakeStitch.js` (scripted upstream: `json`, `sse`, `resetAfterReceive`, `hang`, `delay`, `status`, `refuse`; records every request) and `test/helpers/startProxy.js` (in-process, ephemeral port, injected config). |
-| `test/characterization.test.js` | 43 active tests pinning every route, credential precedence, the `prompts/list` fallback, 405s, 413, 429, path traversal, metrics text, CORS, origin validation, upstream request/response shapes, streaming and logging. |
-| `test/bugs.test.js` | 2 active ★C5 regression tests + **27 `test.todo()`** entries for the still-open findings. |
-| Gate evidence | `npm test` → 70 tests: **43 pass, 27 todo, 0 fail**. `npm run lint` → clean. `npm run typecheck` → clean. `npm run verify` → exit 0. `./run.sh` → starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit. |
+| Item                               | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Branch                             | `hardening/v1` (from `main` @ `2578c26`)                                                                                                                                                                                                                                                                                                                                                                                               |
+| `package.json`                     | `private`, `type: commonjs`, `engines.node >=20.3.0`, scripts `start`/`test`/`test:coverage`/`lint`/`format`/`format:check`/`typecheck`/`verify`. **No runtime dependencies.** Dev-only: `eslint`, `@eslint/js`, `globals`, `prettier`, `typescript`, `@types/node`.                                                                                                                                                                   |
+| `eslint.config.js`                 | Flat config, `js.configs.recommended` + node globals. `no-console` off, `no-unused-vars` strict with `^_` escape, `prefer-const` on.                                                                                                                                                                                                                                                                                                   |
+| `tsconfig.json`                    | `allowJs` + `checkJs`, `noEmit`, `strict: false` (the baseline file is annotated only where it matters), `types: ["node"]`.                                                                                                                                                                                                                                                                                                            |
+| `.prettierrc`                      | `printWidth: 100`, `proseWrap: preserve`. `index.js` is **not** reformatted (keeps the Phase 0 diff reviewable).                                                                                                                                                                                                                                                                                                                       |
+| **The seam**                       | `applyConfig(env, overrides)` + `resolveConfigFromEnv` + `CONFIG_KEYS` + `assignConfig` + `getConfig`; `createState()`; module-level `state` pointer holding `metrics`, `activeConnections`, `rateLimitBuckets`, `tokenCache`, `isShuttingDown`, `warnings`; `handleRequest(req, res)`; `createProxyServer(options)`; `logStartupBanner()`; `logCredentialGuidance()`. `listen()` now happens **only** when `require.main === module`. |
+| Deliberate Phase 0 behaviour fixes | (a) ★C5 missing `return` in the streaming branch — this was a process-killing crash; (b) the two credential guidance messages moved from module load to the entry point so they no longer print before the config is resolved; (c) `let projectId` → `const projectId` (never reassigned); (d) ESLint-driven cleanups (`for…of Object.keys`, regex disables, exported `readRequestBody`).                                              |
+| Harness                            | `test/helpers/fakeStitch.js` (scripted upstream: `json`, `sse`, `resetAfterReceive`, `hang`, `delay`, `status`, `refuse`; records every request) and `test/helpers/startProxy.js` (in-process, ephemeral port, injected config).                                                                                                                                                                                                       |
+| `test/characterization.test.js`    | 43 active tests pinning every route, credential precedence, the `prompts/list` fallback, 405s, 413, 429, path traversal, metrics text, CORS, origin validation, upstream request/response shapes, streaming and logging.                                                                                                                                                                                                               |
+| `test/bugs.test.js`                | 2 active ★C5 regression tests + **27 `test.todo()`** entries for the still-open findings.                                                                                                                                                                                                                                                                                                                                              |
+| Gate evidence                      | `npm test` → 70 tests: **43 pass, 27 todo, 0 fail**. `npm run lint` → clean. `npm run typecheck` → clean. `npm run verify` → exit 0. `./run.sh` → starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit.                                                                                                                                                                                                                                 |
 
 ### Note on the test-process model
 
@@ -443,51 +446,52 @@ verifying `./run.sh`.
 
 ## 14. Phase 1 — what landed (`dfd243c`)
 
-| Finding | Status | Fix | Tests |
-|---|---|---|---|
-| ★C2 malformed input kills the process | **fixed** | URL from a constant base; `parseHostHeader()`; `handleRequest()` wrapper → `-32603`; `server.on("clientError")` | 6 |
-| ★S4 listener leak per request | **fixed** | `trackConnection` once per socket | 2 |
-| ★N3 `HEAD /health` ⇒ 404 | **fixed** | `HEAD` on `/health`, `/metrics`, `/instructions` | 3 |
-| ★P2 error responses always `id: null` | **fixed** | `sendJsonRpcError()` + `extractJsonRpcIds()`; arrays supported | 7 |
-| ★N2 size limit unreachable when unauthenticated | **fixed** | bounded body read **before** the credential decision | 1 |
-| ★P1 MCP headers dropped both ways | **fixed** | explicit request/response allow-lists; `X-Accel-Buffering: no` on SSE | 5 |
-| ★N7 per-request project-ID warning | **fixed** | `state.warnings.noProjectId` one-shot guard | — |
+| Finding                                         | Status    | Fix                                                                                                             | Tests |
+| ----------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------- | ----- |
+| ★C2 malformed input kills the process           | **fixed** | URL from a constant base; `parseHostHeader()`; `handleRequest()` wrapper → `-32603`; `server.on("clientError")` | 6     |
+| ★S4 listener leak per request                   | **fixed** | `trackConnection` once per socket                                                                               | 2     |
+| ★N3 `HEAD /health` ⇒ 404                        | **fixed** | `HEAD` on `/health`, `/metrics`, `/instructions`                                                                | 3     |
+| ★P2 error responses always `id: null`           | **fixed** | `sendJsonRpcError()` + `extractJsonRpcIds()`; arrays supported                                                  | 7     |
+| ★N2 size limit unreachable when unauthenticated | **fixed** | bounded body read **before** the credential decision                                                            | 1     |
+| ★P1 MCP headers dropped both ways               | **fixed** | explicit request/response allow-lists; `X-Accel-Buffering: no` on SSE                                           | 5     |
+| ★N7 per-request project-ID warning              | **fixed** | `state.warnings.noProjectId` one-shot guard                                                                     | —     |
 
 Deliberate behaviour changes (all recorded):
+
 1. An unauthenticated over-sized body now answers **413** rather than 401 (★N2). Required to
    enforce the limit at all; `MAX_BODY_SIZE_BYTES` is still the same knob.
 2. Error responses now echo the JSON-RPC `id` instead of `null` (★P2). Strictly better for
    clients; a client that mis-relied on `null` would have to be buggy already.
 3. A malformed `Host` now answers **400 `-32600`**. Previously it killed the process. Which
-   hosts are *acceptable* is unchanged — that allow-list is Phase 5.
+   hosts are _acceptable_ is unchanged — that allow-list is Phase 5.
 4. Requests carrying MCP headers now forward them upstream. Non-MCP headers, cookies and
    hop-by-hop headers are still dropped.
 
 ### Error-code table (extended)
 
-| Code | Meaning | Where |
-|---|---|---|
-| `-32001` | Invalid Origin header (403) | origin validation |
-| `-32002` | Rate limit exceeded (429) | token bucket |
-| `-32003` | Request body too large (413) | bounded body reader |
-| `-32004` | Upstream request timed out (504) | catch, `AbortError`/`TimeoutError` |
-| `-32005` | Method not allowed on `/mcp` (405) | GET/DELETE/HEAD/other |
-| `-32006` | Upstream request to Stitch failed (502) | catch, generic |
-| `-32007` | Missing API key (401) | credential check |
-| `-32601` | Not found (404) | router fallthrough |
-| **`-32600`** | **Invalid Request (400)** | **malformed `Host` or malformed HTTP (added in Phase 1)** |
-| **`-32603`** | **Internal error (500)** | **`handleRequest` safety wrapper (added in Phase 1)** |
-| `-32008` | **Outcome unknown (502)** | unsafe call that failed after being sent; check `list_screens`/`list_projects` before retrying |
+| Code         | Meaning                                 | Where                                                                                          |
+| ------------ | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `-32001`     | Invalid Origin header (403)             | origin validation                                                                              |
+| `-32002`     | Rate limit exceeded (429)               | token bucket                                                                                   |
+| `-32003`     | Request body too large (413)            | bounded body reader                                                                            |
+| `-32004`     | Upstream request timed out (504)        | catch, `AbortError`/`TimeoutError`                                                             |
+| `-32005`     | Method not allowed on `/mcp` (405)      | GET/DELETE/HEAD/other                                                                          |
+| `-32006`     | Upstream request to Stitch failed (502) | catch, generic                                                                                 |
+| `-32007`     | Missing API key (401)                   | credential check                                                                               |
+| `-32601`     | Not found (404)                         | router fallthrough                                                                             |
+| **`-32600`** | **Invalid Request (400)**               | **malformed `Host` or malformed HTTP (added in Phase 1)**                                      |
+| **`-32603`** | **Internal error (500)**                | **`handleRequest` safety wrapper (added in Phase 1)**                                          |
+| `-32008`     | **Outcome unknown (502)**               | unsafe call that failed after being sent; check `list_screens`/`list_projects` before retrying |
 
 ---
 
 ## 15. Phase 1b — what landed (`78cccf8`)
 
-| Finding | Status | Fix | Tests |
-|---|---|---|---|
-| ★N5 per-project debug logs misattributed | **fixed** | `extractProjectIdFromBody()`; log attribution uses `arguments.projectId`; upstream header source deliberately unchanged | 5 |
-| ★N6 error-path debug log lost the body | **fixed** | `requestBody` and the resolved log project ID hoisted out of the `try` so the `catch` can see them | 3 |
-| ★N8 `test.sh` printed the API key | **fixed** | prints `api key: configured`/`missing`; guarded by a static scan **and** a functional sentinel-key run | 3 |
+| Finding                                  | Status    | Fix                                                                                                                     | Tests |
+| ---------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------- | ----- |
+| ★N5 per-project debug logs misattributed | **fixed** | `extractProjectIdFromBody()`; log attribution uses `arguments.projectId`; upstream header source deliberately unchanged | 5     |
+| ★N6 error-path debug log lost the body   | **fixed** | `requestBody` and the resolved log project ID hoisted out of the `try` so the `catch` can see them                      | 3     |
+| ★N8 `test.sh` printed the API key        | **fixed** | prints `api key: configured`/`missing`; guarded by a static scan **and** a functional sentinel-key run                  | 3     |
 
 ### Phase 1 summary
 
@@ -500,19 +504,19 @@ written to a log or a terminal.
 
 ## 16. Phase 2 progress
 
-| Module | Status | Commit |
-|---|---|---|
-| `src/upstream/errors.js` | ✅ extracted | `2603fa0` |
-| `src/mcp/jsonrpc.js` | ✅ extracted | `2603fa0` |
-| `src/observability/metrics.js` | ✅ extracted | `2603fa0` |
-| `src/unit` tests for the above | ✅ 24 tests | `6c0be4f` |
-| `src/http/respond.js` | ⬜ next | — |
-| `src/http/security.js` | ⬜ | — |
-| `src/http/ratelimit.js` | ⬜ | — |
-| `src/observability/logger.js` | ⬜ | — |
-| `src/views/*`, `src/routes/*` | ⬜ | — |
-| `src/server.js` | ⬜ | — |
-| config onto the instance (multi-proxy isolation) | ⬜ | — |
+| Module                                           | Status       | Commit    |
+| ------------------------------------------------ | ------------ | --------- |
+| `src/upstream/errors.js`                         | ✅ extracted | `2603fa0` |
+| `src/mcp/jsonrpc.js`                             | ✅ extracted | `2603fa0` |
+| `src/observability/metrics.js`                   | ✅ extracted | `2603fa0` |
+| `src/unit` tests for the above                   | ✅ 24 tests  | `6c0be4f` |
+| `src/http/respond.js`                            | ⬜ next      | —         |
+| `src/http/security.js`                           | ⬜           | —         |
+| `src/http/ratelimit.js`                          | ⬜           | —         |
+| `src/observability/logger.js`                    | ⬜           | —         |
+| `src/views/*`, `src/routes/*`                    | ⬜           | —         |
+| `src/server.js`                                  | ⬜           | —         |
+| config onto the instance (multi-proxy isolation) | ⬜           | —         |
 
 `index.js`: 3,400 → 3,300 lines so far.
 
@@ -520,19 +524,19 @@ written to a log or a terminal.
 
 ## 17. Phase 3 progress
 
-| Item | Status | Where |
-|---|---|---|
-| Classification (safe/unsafe, batches, overrides, fail-closed) | ✅ `b96e3e7` | `src/mcp/classify.js` |
-| Phase-aware retry (`connect`/`sent`/`response`) + full jitter + `Retry-After` | ✅ `b96e3e7` | `src/upstream/retry.js` |
-| `-32008` outcome-unknown response | ✅ `b96e3e7` | `index.js` |
-| In-flight coalescing (unsafe only) + per-waiter id rewrite | ✅ `b96e3e7` | `src/idempotency/store.js`, `rewriteJsonRpcId` |
-| Result store + replay (LRU, byte caps, TTL) | ✅ `b96e3e7` | `src/idempotency/store.js` |
-| `Idempotency-Key` / `_meta.idempotencyKey` | ✅ `4a4e810` (4 end-to-end tests) | |
-| `tools/list` annotation injection | ✅ `c42a7b9` | `annotateToolsList` |
-| **Orphan capture** (detach an unsafe request after client disconnect / timeout) | ✅ `7f0d3e9` (4 tests) | |
-| `notifications/cancelled` for safe in-flight requests (P5) | ⬜ | |
-| `tools/list` caching to absorb discovery storms | ⬜ | |
-| Metrics for coalesced/replayed/orphaned | ⬜ | |
+| Item                                                                            | Status                            | Where                                          |
+| ------------------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------- |
+| Classification (safe/unsafe, batches, overrides, fail-closed)                   | ✅ `b96e3e7`                      | `src/mcp/classify.js`                          |
+| Phase-aware retry (`connect`/`sent`/`response`) + full jitter + `Retry-After`   | ✅ `b96e3e7`                      | `src/upstream/retry.js`                        |
+| `-32008` outcome-unknown response                                               | ✅ `b96e3e7`                      | `index.js`                                     |
+| In-flight coalescing (unsafe only) + per-waiter id rewrite                      | ✅ `b96e3e7`                      | `src/idempotency/store.js`, `rewriteJsonRpcId` |
+| Result store + replay (LRU, byte caps, TTL)                                     | ✅ `b96e3e7`                      | `src/idempotency/store.js`                     |
+| `Idempotency-Key` / `_meta.idempotencyKey`                                      | ✅ `4a4e810` (4 end-to-end tests) |                                                |
+| `tools/list` annotation injection                                               | ✅ `c42a7b9`                      | `annotateToolsList`                            |
+| **Orphan capture** (detach an unsafe request after client disconnect / timeout) | ✅ `7f0d3e9` (4 tests)            |                                                |
+| `notifications/cancelled` for safe in-flight requests (P5)                      | ⬜                                |                                                |
+| `tools/list` caching to absorb discovery storms                                 | ⬜                                |                                                |
+| Metrics for coalesced/replayed/orphaned                                         | ⬜                                |                                                |
 
 ### Deliberate behaviour changes in Phase 3
 

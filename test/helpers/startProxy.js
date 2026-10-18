@@ -55,7 +55,10 @@ async function startProxy(overrides = {}) {
   /** @param {string} path @param {RequestInit & { rawBody?: string }} [init] */
   const request = (path, init) => {
     const { rawBody, ...rest } = init || {};
-    return fetch(`${url}${path}`, /** @type {RequestInit} */ ({ ...rest, body: rawBody ?? rest.body }));
+    return fetch(
+      `${url}${path}`,
+      /** @type {RequestInit} */ ({ ...rest, body: rawBody ?? rest.body }),
+    );
   };
 
   /** @param {string} path @param {any} body @param {RequestInit} [init] */

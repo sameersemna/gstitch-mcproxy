@@ -27,7 +27,7 @@ so the per-IP rate limit could be bypassed by presenting a fresh address per req
 
 1. **Bind `0.0.0.0`.** Other LAN computers must reach the proxy. Loopback-only is not acceptable.
 2. **Origins must accept LAN computers.**
-3. **No `PROXY_AUTH_TOKEN`.** LAN-only reachability *is* the control; adding a token would mean
+3. **No `PROXY_AUTH_TOKEN`.** LAN-only reachability _is_ the control; adding a token would mean
    reconfiguring every LAN client.
 4. Unsafe-call windows: 10 minutes (see ADR 0003).
 5. Rate limiting on by default, generously.

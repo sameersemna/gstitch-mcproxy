@@ -417,11 +417,26 @@ test("retry: parseRetryAfter handles seconds, HTTP-dates and junk", () => {
 });
 
 test("retry: full jitter stays within the exponential ceiling", () => {
-  assert.equal(jitteredDelay(1, 100, () => 0), 0);
-  assert.equal(jitteredDelay(1, 100, () => 1), 100);
-  assert.equal(jitteredDelay(2, 100, () => 1), 200);
-  assert.equal(jitteredDelay(3, 100, () => 1), 400);
-  assert.equal(jitteredDelay(10, 100, () => 1), 51200);
+  assert.equal(
+    jitteredDelay(1, 100, () => 0),
+    0,
+  );
+  assert.equal(
+    jitteredDelay(1, 100, () => 1),
+    100,
+  );
+  assert.equal(
+    jitteredDelay(2, 100, () => 1),
+    200,
+  );
+  assert.equal(
+    jitteredDelay(3, 100, () => 1),
+    400,
+  );
+  assert.equal(
+    jitteredDelay(10, 100, () => 1),
+    51200,
+  );
 
   // A random draw in between stays inside the bound.
   const middle = jitteredDelay(3, 100, () => 0.5);
@@ -507,7 +522,11 @@ test("store: a DELIVERED result is not replayed without an explicit key", () => 
 test("store: a DELIVERED result IS replayed when the client sends an explicit key", () => {
   const store = storeWith();
   const fp = "fp-explicit";
-  store.put(fp, { status: 200, body: '{"v":1}', contentType: "application/json" }, { delivered: true });
+  store.put(
+    fp,
+    { status: 200, body: '{"v":1}', contentType: "application/json" },
+    { delivered: true },
+  );
 
   const entry = store.take(fp, { explicitKey: true });
   assert.ok(entry, "an explicit Idempotency-Key opts in to replay");
@@ -517,10 +536,14 @@ test("store: a DELIVERED result IS replayed when the client sends an explicit ke
 test("store: a result stored because of an explicit key replays without one later", () => {
   const store = storeWith();
   const fp = "fp-keyed";
-  store.put(fp, { status: 200, body: "{}", contentType: "application/json" }, {
-    explicitKey: true,
-    delivered: true,
-  });
+  store.put(
+    fp,
+    { status: 200, body: "{}", contentType: "application/json" },
+    {
+      explicitKey: true,
+      delivered: true,
+    },
+  );
 
   assert.ok(store.take(fp), "the stored entry carries the explicit-key intent");
 });
@@ -592,10 +615,15 @@ test("store: coalescing is released once the request settles", async () => {
   const store = storeWith();
   const fp = "fp-release";
 
-  await store.join(fp, async () => ({ status: 200, body: "{}", contentType: "application/json" })).promise;
+  await store.join(fp, async () => ({ status: 200, body: "{}", contentType: "application/json" }))
+    .promise;
   assert.equal(store.inFlightCount(), 0, "a settled request must leave the in-flight map");
 
-  const again = store.join(fp, async () => ({ status: 200, body: "{}", contentType: "application/json" }));
+  const again = store.join(fp, async () => ({
+    status: 200,
+    body: "{}",
+    contentType: "application/json",
+  }));
   assert.equal(again.coalesced, false);
   await again.promise;
 });
@@ -607,7 +635,11 @@ test("store: a failed coalesced request rejects every waiter and is not cached",
   const first = store.join(fp, async () => {
     throw new Error("upstream exploded");
   });
-  const second = store.join(fp, async () => ({ status: 200, body: "{}", contentType: "application/json" }));
+  const second = store.join(fp, async () => ({
+    status: 200,
+    body: "{}",
+    contentType: "application/json",
+  }));
 
   await assert.rejects(first.promise, /upstream exploded/);
   await assert.rejects(second.promise, /upstream exploded/);
@@ -651,15 +683,24 @@ test("store: taking an entry refreshes its LRU position", () => {
 test("store: the byte cap is enforced", () => {
   const store = storeWith({ maxTotalBytes: 100, maxEntryBytes: 80 });
 
-  assert.equal(store.put("big", { status: 200, body: "x".repeat(60), contentType: "text/plain" }), true);
-  assert.equal(store.put("bigger", { status: 200, body: "y".repeat(60), contentType: "text/plain" }), true);
+  assert.equal(
+    store.put("big", { status: 200, body: "x".repeat(60), contentType: "text/plain" }),
+    true,
+  );
+  assert.equal(
+    store.put("bigger", { status: 200, body: "y".repeat(60), contentType: "text/plain" }),
+    true,
+  );
 
   assert.ok(store.totalBytes() <= 100, `totalBytes ${store.totalBytes()} must stay under the cap`);
 });
 
 test("store: a single oversized result is refused rather than blowing the cap", () => {
   const store = storeWith({ maxEntryBytes: 10 });
-  assert.equal(store.put("huge", { status: 200, body: "x".repeat(50), contentType: "text/plain" }), false);
+  assert.equal(
+    store.put("huge", { status: 200, body: "x".repeat(50), contentType: "text/plain" }),
+    false,
+  );
   assert.equal(store.size(), 0);
   assert.equal(store.stats.tooLarge, 1);
 });
@@ -1454,7 +1495,11 @@ test("idempotency key: the same call with an Idempotency-Key header is not regen
   });
   assert.equal(second.status, 200);
   assert.equal(second.headers.get("x-proxy-replayed"), "true");
-  assert.equal((await readJson(second)).result.created, "p-once", "the original result is replayed");
+  assert.equal(
+    (await readJson(second)).result.created,
+    "p-once",
+    "the original result is replayed",
+  );
   assert.equal(upstream.count(), 1, "no second generation");
 });
 
@@ -1502,7 +1547,10 @@ test("idempotency key: without a key, a delivered result is NOT replayed", async
     params: { name: "create_project", arguments: { title: "deliberate" } },
   });
 
-  assert.equal((await readJson(await proxy.postJson("/mcp", payload(920)))).result.created, "first");
+  assert.equal(
+    (await readJson(await proxy.postJson("/mcp", payload(920)))).result.created,
+    "first",
+  );
   assert.equal(
     (await readJson(await proxy.postJson("/mcp", payload(921)))).result.created,
     "second",
@@ -1512,7 +1560,10 @@ test("idempotency key: without a key, a delivered result is NOT replayed", async
 });
 
 test("idempotency key: a key does not leak between different tools", async (t) => {
-  const upstream = await startFakeStitch({ type: "json", body: { jsonrpc: "2.0", id: 1, result: {} } });
+  const upstream = await startFakeStitch({
+    type: "json",
+    body: { jsonrpc: "2.0", id: 1, result: {} },
+  });
   const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
   t.after(() => upstream.close());
   t.after(() => proxy.stop());

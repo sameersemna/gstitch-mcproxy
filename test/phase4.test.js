@@ -76,7 +76,11 @@ test("★S1 – a stream that keeps producing is NOT killed by the idle timeout"
   });
   const text = await response.text();
 
-  assert.match(text, /"n":11/, "every event should arrive even though each gap is under the idle limit");
+  assert.match(
+    text,
+    /"n":11/,
+    "every event should arrive even though each gap is under the idle limit",
+  );
 });
 
 test("★S1 – a stream is cut at the total duration cap even while data flows", async (t) => {
@@ -219,7 +223,10 @@ test("★S2 – a slow reader must not make the proxy buffer without bound", asy
   }
 
   const totalBytes = events.reduce((sum, event) => sum + Buffer.byteLength(event), 0);
-  assert.ok(received >= totalBytes * 0.9, `the client should receive the stream (${received}/${totalBytes})`);
+  assert.ok(
+    received >= totalBytes * 0.9,
+    `the client should receive the stream (${received}/${totalBytes})`,
+  );
 
   const peak = samples.length ? Math.max(...samples) : 0;
   assert.ok(
@@ -235,7 +242,8 @@ test("★S2 – a slow reader must not make the proxy buffer without bound", asy
 test("★S3 – a stream is not captured when logging is disabled", async (t) => {
   const events = Array.from(
     { length: 20 },
-    (_, index) => `event: message\ndata: {"jsonrpc":"2.0","id":1,"n":${index},"pad":"${"z".repeat(500)}"}\n\n`,
+    (_, index) =>
+      `event: message\ndata: {"jsonrpc":"2.0","id":1,"n":${index},"pad":"${"z".repeat(500)}"}\n\n`,
   );
   const upstream = await startFakeStitch({ type: "sse", events, eventIntervalMs: 2 });
   const proxy = await startProxy({
@@ -266,7 +274,8 @@ test("★S3 – the debug capture is capped at LOG_MAX_BODY_CHARS", async (t) =>
 
   const events = Array.from(
     { length: 40 },
-    (_, index) => `event: message\ndata: {"jsonrpc":"2.0","id":1,"n":${index},"pad":"${"p".repeat(400)}"}\n\n`,
+    (_, index) =>
+      `event: message\ndata: {"jsonrpc":"2.0","id":1,"n":${index},"pad":"${"p".repeat(400)}"}\n\n`,
   );
   const upstream = await startFakeStitch({ type: "sse", events, eventIntervalMs: 2 });
   const proxy = await startProxy({
@@ -293,10 +302,7 @@ test("★S3 – the debug capture is capped at LOG_MAX_BODY_CHARS", async (t) =>
   const files = fs.readdirSync(projectDir);
   const detail = fs.readFileSync(path.join(projectDir, files[0]), "utf8");
 
-  assert.ok(
-    detail.length < 8000,
-    `the detail log must stay bounded, was ${detail.length} bytes`,
-  );
+  assert.ok(detail.length < 8000, `the detail log must stay bounded, was ${detail.length} bytes`);
   assert.match(detail, /truncated stream capture|"n":/, "the capture should be present but capped");
 });
 

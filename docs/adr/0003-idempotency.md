@@ -39,15 +39,15 @@ Three further duplicate paths exist:
 
 A batch takes the **most unsafe** element (`unsafe` if any element is unsafe).
 
-| Class | Messages / tools |
-|---|---|
-| safe | `initialize`, `ping`, `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`, all `notifications/*` |
-| safe | `tools/call` → `list_projects`, `get_project`, `list_screens`, `get_screen`, `list_design_systems` |
+| Class  | Messages / tools                                                                                                                                                                          |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| safe   | `initialize`, `ping`, `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`, all `notifications/*`                                                                   |
+| safe   | `tools/call` → `list_projects`, `get_project`, `list_screens`, `get_screen`, `list_design_systems`                                                                                        |
 | unsafe | `tools/call` → `create_project`, `create_design_system`, `update_design_system`, `apply_design_system`, `create_screen`, `edit_screens`, `generate_screen_from_text`, `generate_variants` |
-| unsafe | any unknown `tools/call` tool, and any unknown method |
+| unsafe | any unknown `tools/call` tool, and any unknown method                                                                                                                                     |
 
 Upstream `tools/list` annotations (`readOnlyHint`) are honoured when Stitch supplies them, and
-are cached per API-key hash. They never *downgrade* a tool the built-in table calls unsafe unless
+are cached per API-key hash. They never _downgrade_ a tool the built-in table calls unsafe unless
 `readOnlyHint` is explicitly `true`.
 
 ### 2. Retry by error phase, not by message content
@@ -60,10 +60,10 @@ are cached per API-key hash. They never *downgrade* a tool the built-in table ca
   stream reset, socket hang-up, body timeout, abort).
 - **`response`** — an HTTP response arrived, possibly with an error status.
 
-| Class | `connect` | `sent` | `response` |
-|---|---|---|---|
-| **safe** | retry | retry | retry `429`, `502`, `503`, `504` |
-| **unsafe** | retry | **never** — answer "outcome unknown" | **never** |
+| Class      | `connect` | `sent`                               | `response`                       |
+| ---------- | --------- | ------------------------------------ | -------------------------------- |
+| **safe**   | retry     | retry                                | retry `429`, `502`, `503`, `504` |
+| **unsafe** | retry     | **never** — answer "outcome unknown" | **never**                        |
 
 Backoff is exponential with **full jitter**, bounded by the remaining deadline, and honours
 `Retry-After`.
@@ -71,7 +71,7 @@ Backoff is exponential with **full jitter**, bounded by the remaining deadline, 
 The `connect`/`sent` distinction is derived from the undici error code
 (`UND_ERR_CONNECT_TIMEOUT`, `ENOTFOUND`, `ECONNREFUSED` → connect; `UND_ERR_SOCKET`,
 `ECONNRESET`, `ERR_HTTP2_*` → sent). Because the classification is conservative — an
-unrecognised code is treated as `sent` — a missing case can only ever cause *fewer* retries.
+unrecognised code is treated as `sent` — a missing case can only ever cause _fewer_ retries.
 
 ### 3. "Outcome unknown" is a first-class answer
 
@@ -107,7 +107,7 @@ that an identical retry will return its result.
 ### 6. Explicit idempotency keys are opt-in
 
 An `Idempotency-Key` header or `params._meta.idempotencyKey` replays any completed result inside
-the window, **even if it was delivered**. Without a key only *orphaned* results are replayed, so a
+the window, **even if it was delivered**. Without a key only _orphaned_ results are replayed, so a
 deliberate second generation with an identical prompt still works.
 
 ### 7. Bounds

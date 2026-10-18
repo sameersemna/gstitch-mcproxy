@@ -293,7 +293,9 @@ function annotationsForTool(toolName, existing, options = {}) {
   // repeating them with the same arguments *does* produce another artefact — so
   // `destructiveHint` is false and `idempotentHint` is false. Creation is not idempotent.
   const isAdditiveCreation =
-    toolName.startsWith("generate_") || toolName === "create_project" || toolName === "create_screen";
+    toolName.startsWith("generate_") ||
+    toolName === "create_project" ||
+    toolName === "create_screen";
 
   return {
     readOnlyHint: false,
