@@ -628,3 +628,61 @@ test("ratelimit: getClientIp reads X-Forwarded-For (baseline ★N4 behaviour)", 
   assert.equal(getClientIp(/** @type {any} */ ({ headers: {}, socket: { remoteAddress: "::1" } })), "::1");
   assert.equal(getClientIp(/** @type {any} */ ({ headers: {}, socket: {} })), "unknown");
 });
+
+// ---------------------------------------------------------------------------
+// Multi-instance guard (the Phase 2 limitation, made explicit)
+// ---------------------------------------------------------------------------
+
+test("instances: two proxies with different configuration cannot listen simultaneously", async (t) => {
+  const { createProxyServer } = require("../index.js");
+  const { once } = require("node:events");
+
+  const first = createProxyServer({
+    env: { LOG_ENABLED: "false", CORS_ORIGIN: "https://one.example" },
+  });
+  first.listen(0, "127.0.0.1");
+  await once(first, "listening");
+  t.after(async () => {
+    first.closeAllConnections();
+    await new Promise((resolve) => first.close(() => resolve()));
+  });
+
+  assert.throws(
+    () =>
+      createProxyServer({
+        env: { LOG_ENABLED: "false", CORS_ORIGIN: "https://two.example" },
+      }),
+    /process-global/,
+    "a second, differently-configured proxy must be refused rather than silently reconfiguring the first",
+  );
+});
+
+test("instances: two proxies with identical configuration may coexist", async (t) => {
+  const { createProxyServer } = require("../index.js");
+  const { once } = require("node:events");
+
+  /** @param {import("node:test").TestContext} ctx */
+  const start = async (ctx) => {
+    const server = createProxyServer({ env: { LOG_ENABLED: "false", CORS_ORIGIN: "*" } });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    ctx.after(async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(() => resolve()));
+    });
+    return server;
+  };
+
+  const a = await start(t);
+  const b = await start(t);
+
+  const portOf = (server) => /** @type {any} */ (server.address()).port;
+  assert.notEqual(portOf(a), portOf(b));
+
+  for (const server of [a, b]) {
+    const port = portOf(server);
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+});

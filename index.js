@@ -2052,7 +2052,18 @@ async function routeRequest(req, res) {
     return;
   }
 
-  const url = new URL(req.url || "/", "http://localhost");
+  // The URL is built from a constant base so a malformed `Host` can never break parsing
+  // (finding ★C2). A malformed request *target*, however, still has to be handled: an absolute
+  // form such as `http://[bad/health` makes the `URL` constructor throw. That is a client
+  // error, so answer `400` rather than letting it become a generic `500`.
+  let url;
+  try {
+    url = new URL(req.url || "/", "http://localhost");
+  } catch {
+    return sendJsonRpcError(res, 400, -32600, "Invalid Request: malformed request target", null, {
+      Connection: "close",
+    });
+  }
 
   // --- Host validation (finding ★C2) ---
   // Never build the URL from the Host header: a malformed value must not be able to throw.
@@ -2828,6 +2839,16 @@ async function handleRequest(req, res) {
 // --- Server factory ----------------------------------------------------------
 
 /**
+ * Proxies currently listening in this process, mapped to their configuration fingerprint.
+ * Used only to refuse two *concurrently listening* proxies with different configuration while
+ * configuration is still process-global (see the guard inside `createProxyServer`).
+ *
+ * @type {Map<import("http").Server, string>}
+ */
+const liveProxies = new Map();
+
+
+/**
  * Creates a proxy `http.Server` **without** starting to listen.
  *
  * This is the Phase 0 test seam: tests call it with injected configuration and bind to an
@@ -2844,6 +2865,35 @@ async function handleRequest(req, res) {
 function createProxyServer(options = {}) {
   const resolved = applyConfig(options.env || process.env, options.overrides || {});
   state = createState(resolved);
+
+  // PHASE 2 LIMITATION, made explicit instead of silent.
+  //
+  // Configuration still lives in module-level bindings, so only the most recently created
+  // proxy's configuration is active in a given process. Before this guard existed, starting a
+  // second proxy silently reconfigured the first one, so a test that used two proxies with
+  // different settings could pass for entirely the wrong reason.
+  //
+  // The guard only inspects proxies that are **currently listening**: the ordinary
+  // create → use → close → create sequence is unaffected. Phase 6 moves configuration onto the
+  // instance and this restriction disappears.
+  const fingerprint = JSON.stringify(
+    Object.keys(resolved)
+      .sort()
+      .map((key) => {
+        const value = resolved[key];
+        return [key, value instanceof Set ? [...value].sort() : value];
+      }),
+  );
+
+  for (const otherFingerprint of liveProxies.values()) {
+    if (otherFingerprint !== fingerprint) {
+      throw new Error(
+        "Two proxies with different configuration are listening in the same process. " +
+          "Configuration is still process-global (fixed in Phase 6), so put tests that need " +
+          "different configuration in separate test files.",
+      );
+    }
+  }
 
   const server = http.createServer((req, res) => {
     // `handleRequest` never rejects; the extra guard is defensive only.
@@ -2891,6 +2941,12 @@ function createProxyServer(options = {}) {
   // Expose the instance state for tests and graceful shutdown without widening the
   // `http.Server` type for every consumer.
   /** @type {any} */ (server).state = state;
+
+  liveProxies.set(server, fingerprint);
+  server.on("close", () => {
+    liveProxies.delete(server);
+  });
+
   return server;
 }
 

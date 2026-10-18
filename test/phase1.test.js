@@ -170,6 +170,10 @@ test("★C2 – a request with an unparseable absolute URL does not crash", asyn
       null,
       `target ${target} raised a socket error: ${response.error}`,
     );
+    assert.ok(
+      response.status === 200 || response.status === 400,
+      `target ${target} should be served or rejected as a client error, got ${response.status}`,
+    );
   }
 
   assert.equal(
