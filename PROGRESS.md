@@ -174,6 +174,7 @@ are the Phase 5 values, which encode the owner decisions in §12.
 | `ALLOWED_ORIGINS`    | _(empty)_ | extra origins beyond the private-network default                                   |
 | `ALLOWED_HOSTS`      | _(empty)_ | extra Host values; `*` accepts any Host                                            |
 | `TRUST_PROXY`        | `false`   | trust `X-Forwarded-For` (★N4)                                                      |
+| `PUBLIC_BASE_URL`    | _(empty)_ | base URL advertised by the OAuth stubs; empty derives it from the request (★N10)    |
 | `RATE_LIMIT_ENABLED` | `true`    | **owner decision 5**                                                               |
 | `RATE_LIMIT_MAX_RPS` | `100`     | **owner decision 5** — generous                                                    |
 | `RATE_LIMIT_BURST`   | `200`     | **owner decision 5** — generous                                                    |

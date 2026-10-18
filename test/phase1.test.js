@@ -186,7 +186,15 @@ test("★S4 – keep-alive requests must not accumulate 'close' listeners on one
   const proxy = await startProxy({ STITCH_API_KEY: "env-key" });
   t.after(() => proxy.stop());
 
-  /** @type {string[]} */
+  // Capture the actual socket the client uses, so listener counts can be measured directly.
+  // Relying on `process.on("warning")` was a trap: the warning fires once, and if it fires before
+  // the listener is attached (or is emitted asynchronously) the test passes for the wrong reason.
+  /** @type {import("node:net").Socket|null} */
+  let socket = null;
+  proxy.server.on("connection", (accepted) => {
+    socket = accepted;
+  });
+
   const warnings = [];
   const onWarning = (warning) => warnings.push(String(warning.message ?? warning));
   process.on("warning", onWarning);
@@ -205,18 +213,20 @@ test("★S4 – keep-alive requests must not accumulate 'close' listeners on one
       req.end();
     });
 
-  // 40 requests on a single pooled socket. Before the fix, each request added a 'close'
-  // listener and Node warned at 11.
   for (let i = 0; i < 40; i += 1) {
     assert.equal(await get("/health"), 200, `request ${i} should succeed`);
   }
 
-  const leakWarning = warnings.find((w) => /MaxListenersExceededWarning/.test(w));
-  assert.equal(
-    leakWarning,
-    undefined,
-    `★S4: no listener-leak warning expected, got: ${leakWarning}`,
+  assert.ok(socket, "the test should have observed the client socket");
+  const closeListeners = /** @type {any} */ (socket).listenerCount("close");
+
+  assert.ok(
+    closeListeners <= 3,
+    `★S4: one keep-alive socket must not accumulate 'close' listeners (found ${closeListeners} after 40 requests)`,
   );
+
+  const leakWarning = warnings.find((warning) => /MaxListenersExceededWarning/.test(warning));
+  assert.equal(leakWarning, undefined, `★S4: unexpected leak warning: ${leakWarning}`);
 });
 
 test("★S4 – active-connection metrics still track connections after the refactor", async (t) => {

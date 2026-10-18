@@ -16,6 +16,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const { startProxy, readJson } = require("./helpers/startProxy.js");
 const { startFakeStitch } = require("./helpers/fakeStitch.js");
@@ -508,4 +509,95 @@ test("security: a request supplying its own key from a LAN origin still works", 
   );
 
   assert.equal(upstream.requests()[0].headers["x-goog-api-key"], "own-key");
+});
+
+// ---------------------------------------------------------------------------
+// ★N9 / ★N10 / ★N11 — paths, discovery base URL, and the non-auth token
+// ---------------------------------------------------------------------------
+
+test("★N9 – INSTRUCTIONS.md resolves next to index.js, not the working directory", async (t) => {
+  const { createProxyServer } = require("../index.js");
+  const { once } = require("node:events");
+  const os = require("node:os");
+  const fs = require("node:fs");
+
+  // Start the proxy from an unrelated directory, which used to break /instructions.
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "gstitch-cwd-"));
+  const originalCwd = process.cwd();
+  process.chdir(elsewhere);
+
+  const server = createProxyServer({ env: { LOG_ENABLED: "false" } });
+  t.after(async () => {
+    process.chdir(originalCwd);
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(() => resolve()));
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = /** @type {any} */ (server.address()).port;
+
+  const response = await fetch(`http://127.0.0.1:${port}/instructions`);
+  assert.equal(response.status, 200, "★N9: /instructions must work from any working directory");
+  await response.text();
+});
+
+test("★N9 – a relative LOG_DIR resolves next to index.js", () => {
+  const { applyConfig, getConfig } = require("../index.js");
+  const path = require("node:path");
+
+  applyConfig({ LOG_DIR: "logs" });
+  const configured = getConfig().LOG_DIR;
+
+  assert.ok(path.isAbsolute(configured));
+  assert.equal(
+    configured,
+    path.join(path.join(__dirname, ".."), "logs"),
+    "a relative LOG_DIR must be relative to the project, not the working directory",
+  );
+});
+
+test("★N10 – the discovery stubs use the request's own origin, not a hard-coded localhost", async (t) => {
+  const proxy = await startProxy({ MCP_SERVER_PORT: 9999 });
+  t.after(() => proxy.stop());
+
+  const response = await proxy.request("/.well-known/openid-configuration");
+  const body = await readJson(response);
+
+  assert.ok(
+    !body.issuer.includes(":9999"),
+    `★N10: the issuer must not be the configured port when the client used another one (got ${body.issuer})`,
+  );
+  assert.match(body.issuer, new RegExp(`:${proxy.port}$`), "the issuer should match the request host");
+  assert.equal(body.token_endpoint, `${body.issuer}/token`);
+});
+
+test("★N10 – PUBLIC_BASE_URL overrides the advertised base", async (t) => {
+  const proxy = await startProxy({ PUBLIC_BASE_URL: "https://stitch-proxy.lan" });
+  t.after(() => proxy.stop());
+
+  const body = await readJson(await proxy.request("/.well-known/oauth-protected-resource"));
+  assert.equal(body.resource, "https://stitch-proxy.lan");
+  assert.deepEqual(body.authorization_servers, ["https://stitch-proxy.lan"]);
+});
+
+test("★N11 – the issued token is documented and inert, and is not accepted as auth", async (t) => {
+  const upstream = await startFakeStitch({ type: "json" });
+  const proxy = await startProxy({ STITCH_URL: upstream.url });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const token = await readJson(await proxy.request("/token", { method: "POST" }));
+  assert.equal(token.access_token, "local-proxy-token");
+
+  // It grants nothing: without a Stitch credential the request is still rejected, and the
+  // placeholder is not turned into a Stitch key.
+  const response = await proxy.postJson(
+    "/mcp",
+    { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    { headers: { Authorization: `Bearer ${token.access_token}` } },
+  );
+  assert.equal(response.status, 401, "★N11: the placeholder token must not authenticate anything");
+  assert.equal(upstream.count(), 0);
 });

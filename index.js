@@ -49,7 +49,7 @@ const { createIdempotencyStore } = require("./src/idempotency/store.js");
 const { streamWithBackpressure } = require("./src/upstream/stream.js");
 const { createSemaphore } = require("./src/upstream/limiter.js");
 
-function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
+function loadEnvFile(envPath = path.resolve(__dirname, ".env")) {
   if (!fs.existsSync(envPath)) {
     return;
   }
@@ -144,6 +144,7 @@ let ALLOWED_ORIGINS_CSV;
 let ALLOWED_HOSTS_CSV;
 let ALLOW_ALL_HOSTS;
 let TRUST_PROXY;
+let PUBLIC_BASE_URL;
 
 function parseBoolean(value, fallback) {
   return String(value === undefined || value === null ? fallback : value).toLowerCase() === "true";
@@ -220,6 +221,7 @@ const CONFIG_KEYS = [
   "ALLOWED_HOSTS_CSV",
   "ALLOW_ALL_HOSTS",
   "TRUST_PROXY",
+  "PUBLIC_BASE_URL",
 ];
 
 /**
@@ -227,9 +229,9 @@ const CONFIG_KEYS = [
  * @param {Record<string, any>} resolved
  */
 function assignConfig(resolved) {
-  // `INSTRUCTIONS_PATH` is not overridable: it is derived from the process CWD, exactly as
-  // before this seam existed (documented as a known issue and fixed in Phase 6).
-  INSTRUCTIONS_PATH = path.resolve(process.cwd(), "INSTRUCTIONS.md");
+  // Finding ★N9: `INSTRUCTIONS.md` ships next to `index.js`, so it is resolved against
+  // `__dirname`, not the working directory.
+  INSTRUCTIONS_PATH = path.resolve(__dirname, "INSTRUCTIONS.md");
 
   for (const key of CONFIG_KEYS) {
     configTargets[key].set(resolved[key]);
@@ -493,6 +495,7 @@ const configTargets = (() => {
     () => TRUST_PROXY,
     (v) => (TRUST_PROXY = v),
   );
+  define("PUBLIC_BASE_URL", () => PUBLIC_BASE_URL, (v) => (PUBLIC_BASE_URL = v));
 
   return targets;
 })();
@@ -515,7 +518,10 @@ function resolveConfigFromEnv(env) {
     MCP_SERVER_HOST: env.MCP_SERVER_HOST || "0.0.0.0",
     LOG_ENABLED: parseBoolean(env.LOG_ENABLED, "false"),
     LOG_LEVEL: String(env.LOG_LEVEL || "info").toLowerCase(),
-    LOG_DIR: path.resolve(process.cwd(), env.LOG_DIR || "logs"),
+    // Finding ★N9: resolving against `process.cwd()` made the proxy break when started from
+    // another directory. A relative LOG_DIR is now relative to the project, and an absolute one is
+    // honoured as given.
+    LOG_DIR: path.resolve(__dirname, env.LOG_DIR || "logs"),
     LOG_FILE_NAME: env.LOG_FILE_NAME || "proxy.log",
     LOG_MAX_BODY_CHARS: parseInteger(env.LOG_MAX_BODY_CHARS, 20000),
     LOG_MAX_FILE_SIZE_BYTES: parseInteger(env.LOG_MAX_FILE_SIZE_BYTES, 5242880),
@@ -603,6 +609,9 @@ function resolveConfigFromEnv(env) {
     ALLOW_ALL_HOSTS: String(env.ALLOWED_HOSTS || "").trim() === "*",
     // Only trust X-Forwarded-For from a reverse proxy you control (finding ★N4).
     TRUST_PROXY: parseBoolean(env.TRUST_PROXY, "false"),
+    // Finding ★N10: the OAuth discovery stubs hard-coded `http://localhost:<port>`, which is wrong
+    // behind a hostname or a different port. Empty means "derive from the request".
+    PUBLIC_BASE_URL: String(env.PUBLIC_BASE_URL || "").replace(/\/+$/, ""),
   };
 }
 
@@ -630,9 +639,13 @@ function applyConfig(env = process.env, overrides = {}) {
     resolved[key] = value;
   }
 
-  // Re-resolve derived paths so an override of a relative path still becomes absolute.
+  // Re-resolve derived paths so an override of a relative path still becomes absolute. A caller
+  // that passes an absolute path (the test harness does) keeps it verbatim.
   if (overrides.LOG_DIR) {
-    resolved.LOG_DIR = path.resolve(process.cwd(), String(overrides.LOG_DIR));
+    const requested = String(overrides.LOG_DIR);
+    resolved.LOG_DIR = path.isAbsolute(requested)
+      ? requested
+      : path.resolve(__dirname, requested);
   }
 
   assignConfig(resolved);
@@ -2383,9 +2396,32 @@ function isLocalClient(req) {
   return isLoopbackAddress(remote) || isPrivateAddress(remote);
 }
 
+/**
+ * The public base URL to advertise in the OAuth discovery stubs.
+ *
+ * Finding ★N10: these used to hard-code `http://localhost:<port>`, which is wrong the moment the
+ * proxy is reached by a hostname, a LAN address or a reverse proxy. `PUBLIC_BASE_URL` wins when
+ * configured; otherwise the request's own origin is used, which is what the client actually used.
+ *
+ * These stubs are **not authentication** — the token they hand out is a fixed placeholder (★N11).
+ *
+ * @param {import("http").IncomingMessage} req
+ * @returns {string}
+ */
+function publicBaseUrlFor(req) {
+  if (PUBLIC_BASE_URL) {
+    return PUBLIC_BASE_URL;
+  }
+
+  const host = req.headers.host;
+  if (host && /^[^\s/]+$/.test(String(host))) {
+    return `http://${host}`;
+  }
+
+  return `http://localhost:${MCP_SERVER_PORT}`;
+}
+
 async function routeRequest(req, res) {
-  // Track connection for graceful shutdown
-  trackConnection(req.socket);
 
   // --- Origin and Host policy (ADR 0005) ---------------------------------------------
   // Owner decisions: the proxy stays on 0.0.0.0 so other LAN machines can use it, and origins
@@ -2499,17 +2535,19 @@ async function routeRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
+    const base = publicBaseUrlFor(req);
     return sendJson(res, 200, {
-      resource: `http://localhost:${MCP_SERVER_PORT}`,
-      authorization_servers: [`http://localhost:${MCP_SERVER_PORT}`],
+      resource: base,
+      authorization_servers: [base],
     });
   }
 
   if (req.method === "GET" && url.pathname === "/.well-known/openid-configuration") {
+    const base = publicBaseUrlFor(req);
     return sendJson(res, 200, {
-      issuer: `http://localhost:${MCP_SERVER_PORT}`,
-      authorization_endpoint: `http://localhost:${MCP_SERVER_PORT}/auth`,
-      token_endpoint: `http://localhost:${MCP_SERVER_PORT}/token`,
+      issuer: base,
+      authorization_endpoint: `${base}/auth`,
+      token_endpoint: `${base}/token`,
     });
   }
 
@@ -3909,6 +3947,13 @@ function createProxyServer(options = {}) {
   // (bad request line, bad headers, malformed chunked encoding). The default behaviour is to
   // write a bare `400 Bad Request`; we answer consistently instead. `ECONNRESET` means the
   // peer already left, so there is nothing to send.
+  // Finding ★S4: connection tracking belongs to the socket, not the request. Calling it per
+  // request added one `close` listener per request to the same keep-alive socket, so Node emitted
+  // `MaxListenersExceededWarning` after eleven requests and listeners accumulated without bound.
+  server.on("connection", (socket) => {
+    trackConnection(socket);
+  });
+
   server.on("clientError", (error, socket) => {
     if (/** @type {any} */ (error).code === "ECONNRESET" || !socket.writable) {
       socket.destroy();
