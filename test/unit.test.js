@@ -295,3 +295,336 @@ test("metrics: rendering an empty snapshot still produces valid exposition text"
   assert.ok(!text.includes("undefined"));
   assert.ok(!text.includes("NaN"));
 });
+
+// ---------------------------------------------------------------------------
+// src/http/respond.js
+// ---------------------------------------------------------------------------
+
+const {
+  escapeHtml,
+  formatInlineMarkdown,
+  sendJson,
+  sendJsonRpcError,
+} = require("../src/http/respond.js");
+
+/**
+ * Minimal `ServerResponse` stub that records what the helpers wrote.
+ *
+ * @returns {{
+ *   rec: { written: any[], body: string, headersSent: boolean, writableEnded: boolean },
+ *   stub: any,
+ * }}
+ */
+function stubResponse() {
+  const rec = {
+    written: /** @type {any[]} */ ([]),
+    body: "",
+    headersSent: false,
+    writableEnded: false,
+  };
+  const stub = {
+    get headersSent() {
+      return rec.headersSent;
+    },
+    get writableEnded() {
+      return rec.writableEnded;
+    },
+    writeHead(status, headers) {
+      rec.headersSent = true;
+      rec.written.push({ status, headers });
+      return this;
+    },
+    end(chunk) {
+      rec.writableEnded = true;
+      if (typeof chunk === "string") {
+        rec.body += chunk;
+      }
+      return this;
+    },
+  };
+  return { rec, stub };
+}
+
+test("respond: escapeHtml escapes every dangerous character", () => {
+  assert.equal(
+    escapeHtml(`<script>alert("x")</script> & 'quoted'`),
+    "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;quoted&#39;",
+  );
+  assert.equal(escapeHtml(null), "null");
+  assert.equal(escapeHtml(42), "42");
+});
+
+test("respond: a logged body containing <script> renders inert", () => {
+  // This is the XSS regression guard for the log viewer: escaping happens before any markup
+  // is reintroduced.
+  const rendered = formatInlineMarkdown("body: <script>alert(1)</script> `ok`");
+  assert.ok(!rendered.includes("<script>"), rendered);
+  assert.ok(rendered.includes("&lt;script&gt;"), rendered);
+  assert.ok(rendered.includes("<code>ok</code>"), rendered);
+});
+
+test("respond: formatInlineMarkdown cannot be tricked into emitting markup from backticks", () => {
+  const rendered = formatInlineMarkdown("`<img src=x onerror=alert(1)>`");
+  assert.ok(!rendered.includes("<img"), rendered);
+  assert.ok(rendered.includes("&lt;img"), rendered);
+});
+
+test("respond: sendJson sets a Content-Length that matches the body", () => {
+  const { rec, stub } = stubResponse();
+  sendJson(stub, 201, { a: 1 });
+
+  assert.equal(rec.written[0].status, 201);
+  assert.equal(rec.written[0].headers["Content-Type"], "application/json");
+  assert.equal(rec.written[0].headers["Content-Length"], String(Buffer.byteLength(rec.body)));
+  assert.equal(rec.body, '{"a":1}');
+});
+
+test("respond: sendJson with head omits the body but keeps Content-Length", () => {
+  const { rec, stub } = stubResponse();
+  sendJson(stub, 200, { big: "x".repeat(100) }, { head: true });
+
+  assert.equal(rec.body, "", "HEAD must not return a body");
+  assert.ok(Number(rec.written[0].headers["Content-Length"]) > 100);
+});
+
+test("respond: sendJsonRpcError echoes a single id", () => {
+  const { rec, stub } = stubResponse();
+  sendJsonRpcError(stub, 502, -32006, "boom", "req-1");
+
+  assert.equal(rec.written[0].status, 502);
+  assert.deepEqual(JSON.parse(rec.body), {
+    jsonrpc: "2.0",
+    error: { code: -32006, message: "boom" },
+    id: "req-1",
+  });
+});
+
+test("respond: sendJsonRpcError emits one error object per batched id", () => {
+  const { rec, stub } = stubResponse();
+  sendJsonRpcError(stub, 401, -32007, "missing key", [1, 2]);
+
+  const body = JSON.parse(rec.body);
+  assert.ok(Array.isArray(body));
+  assert.deepEqual(
+    body.map((entry) => entry.id),
+    [1, 2],
+  );
+  for (const entry of body) {
+    assert.equal(entry.error.code, -32007);
+  }
+});
+
+test("respond: sendJsonRpcError keeps falsy ids, including 0", () => {
+  const { rec, stub } = stubResponse();
+  sendJsonRpcError(stub, 400, -32600, "bad", 0);
+  assert.equal(JSON.parse(rec.body).id, 0);
+});
+
+test("respond: sendJsonRpcError never writes twice once the response started", () => {
+  // The ★C5 class of bug: writing headers after a stream has been sent threw
+  // ERR_HTTP_HEADERS_SENT and killed the process. The helper must be a no-op instead.
+  const { rec, stub } = stubResponse();
+  stub.writeHead(200, {});
+  stub.end("streamed");
+
+  const before = rec.written.length;
+  sendJsonRpcError(stub, 500, -32603, "too late", 1);
+
+  assert.equal(rec.written.length, before, "no second writeHead may happen");
+  assert.equal(rec.body, "streamed", "the already-sent body must be untouched");
+});
+
+// ---------------------------------------------------------------------------
+// src/http/security.js
+// ---------------------------------------------------------------------------
+
+const {
+  validateOrigin,
+  parseHostHeader,
+  redactHeaders,
+  setCorsHeaders,
+} = require("../src/http/security.js");
+
+/**
+ * @param {Record<string, any>} headers
+ * @param {string} [url]
+ */
+function fakeRequest(headers, url = "/mcp") {
+  return /** @type {any} */ ({ url, headers, socket: { remoteAddress: "127.0.0.1" } });
+}
+
+test("security: validateOrigin ignores non-/mcp routes", () => {
+  assert.equal(validateOrigin(fakeRequest({ origin: "https://evil.example" }, "/health"), "*"), true);
+});
+
+test("security: validateOrigin accepts missing Origin and localhost origins", () => {
+  assert.equal(validateOrigin(fakeRequest({}), "*"), true);
+  assert.equal(validateOrigin(fakeRequest({ origin: "http://localhost:3000" }), "*"), true);
+  assert.equal(validateOrigin(fakeRequest({ origin: "http://127.0.0.1:5173" }), "*"), true);
+});
+
+test("security: validateOrigin with '*' accepts every origin (baseline ★C3 behaviour)", () => {
+  // Pinned on purpose: Phase 5 changes this to an allow-list. When it does, this test must be
+  // updated deliberately rather than silently.
+  assert.equal(validateOrigin(fakeRequest({ origin: "https://evil.example" }), "*"), true);
+});
+
+test("security: validateOrigin with a specific origin only accepts that origin", () => {
+  assert.equal(
+    validateOrigin(fakeRequest({ origin: "https://good.example" }), "https://good.example"),
+    true,
+  );
+  assert.equal(
+    validateOrigin(fakeRequest({ origin: "https://evil.example" }), "https://good.example"),
+    false,
+  );
+});
+
+test("security: parseHostHeader accepts the usual forms", () => {
+  for (const host of ["localhost", "localhost:8787", "127.0.0.1:11401", "example.com", "[::1]:80"]) {
+    const result = parseHostHeader(fakeRequest({ host }));
+    assert.equal(result.reason, null, `${host} should be accepted`);
+    assert.equal(typeof result.host, "string");
+  }
+});
+
+test("security: parseHostHeader accepts a request with no Host (HTTP/1.0)", () => {
+  assert.deepEqual(parseHostHeader(fakeRequest({})), { host: null, reason: null });
+  assert.deepEqual(parseHostHeader(fakeRequest({ host: "" })), { host: null, reason: null });
+});
+
+test("security: parseHostHeader rejects malformed values without throwing", () => {
+  const cases = [
+    "[bad",
+    "has space",
+    "host/path",
+    "user@host",
+    "host?query",
+    "host:99999",
+    "host:0",
+    "[::1",
+  ];
+  for (const host of cases) {
+    const result = parseHostHeader(fakeRequest({ host }));
+    assert.notEqual(result.reason, null, `${host} should be rejected`);
+  }
+});
+
+test("security: parseHostHeader rejects a duplicated Host header", () => {
+  const result = parseHostHeader(fakeRequest({ host: ["a.example", "b.example"] }));
+  assert.match(String(result.reason), /duplicate/i);
+});
+
+test("security: redactHeaders masks every credential header", () => {
+  const redacted = redactHeaders({
+    authorization: "Bearer secret",
+    "x-stitch-api-key": "secret2",
+    stitch_api_key: "secret3",
+    "x-goog-api-key": "secret4",
+    "content-type": "application/json",
+  });
+
+  assert.equal(redacted.authorization, "[redacted]");
+  assert.equal(redacted["x-stitch-api-key"], "[redacted]");
+  assert.equal(redacted.stitch_api_key, "[redacted]");
+  assert.equal(redacted["x-goog-api-key"], "[redacted]");
+  assert.equal(redacted["content-type"], "application/json", "safe headers must survive");
+
+  assert.ok(!JSON.stringify(redacted).includes("secret"));
+});
+
+test("security: redactHeaders tolerates missing headers", () => {
+  assert.deepEqual(redactHeaders(undefined), {});
+  assert.deepEqual(redactHeaders(null), {});
+});
+
+test("security: setCorsHeaders writes the documented baseline headers", () => {
+  /** @type {Record<string, string>} */
+  const set = {};
+  const res = /** @type {any} */ ({
+    setHeader: (name, value) => {
+      set[name] = value;
+    },
+  });
+
+  setCorsHeaders(res, fakeRequest({ origin: "https://evil.example" }), "*");
+
+  assert.equal(set["Access-Control-Allow-Origin"], "*");
+  assert.equal(set["Access-Control-Allow-Methods"], "GET, POST, OPTIONS");
+  assert.equal(set["Access-Control-Max-Age"], "86400");
+});
+
+// ---------------------------------------------------------------------------
+// src/http/ratelimit.js
+// ---------------------------------------------------------------------------
+
+const { getClientIp, checkRateLimit, sweepRateLimitBuckets } = require("../src/http/ratelimit.js");
+
+test("ratelimit: disabled means always allowed and no bucket allocated", () => {
+  const buckets = new Map();
+  const decision = checkRateLimit(buckets, { enabled: false, maxRps: 1, burst: 1 }, "1.2.3.4");
+  assert.equal(decision.allowed, true);
+  assert.equal(buckets.size, 0);
+});
+
+test("ratelimit: the burst is consumed then refilled over time", () => {
+  const buckets = new Map();
+  const config = { enabled: true, maxRps: 2, burst: 3 };
+  const t0 = 1_000_000;
+
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(checkRateLimit(buckets, config, "ip", t0).allowed, true, `burst ${i + 1}`);
+  }
+
+  const blocked = checkRateLimit(buckets, config, "ip", t0);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.retryAfter, 1, "retryAfter is ceil(1/maxRps)");
+
+  // 500ms at 2 rps = one token back.
+  assert.equal(checkRateLimit(buckets, config, "ip", t0 + 500).allowed, true);
+});
+
+test("ratelimit: buckets are per client", () => {
+  const buckets = new Map();
+  const config = { enabled: true, maxRps: 1, burst: 1 };
+
+  assert.equal(checkRateLimit(buckets, config, "a", 0).allowed, true);
+  assert.equal(checkRateLimit(buckets, config, "a", 0).allowed, false);
+  assert.equal(checkRateLimit(buckets, config, "b", 0).allowed, true, "b has its own bucket");
+});
+
+test("ratelimit: refill is capped at the burst size", () => {
+  const buckets = new Map();
+  const config = { enabled: true, maxRps: 10, burst: 2 };
+  checkRateLimit(buckets, config, "ip", 0);
+  checkRateLimit(buckets, config, "ip", 0);
+  assert.equal(buckets.get("ip").tokens, 0, "both burst tokens consumed");
+
+  // A long idle period would refill far more than the burst allows, then this call spends one.
+  checkRateLimit(buckets, config, "ip", 1_000_000);
+  assert.equal(buckets.get("ip").tokens, 1, "refill is capped at burst (2) minus the spent token");
+});
+
+test("ratelimit: sweepRateLimitBuckets drops only stale entries", () => {
+  const now = 1_000_000;
+  const buckets = new Map([
+    ["fresh", { tokens: 1, lastRefill: now - 1000 }],
+    ["stale", { tokens: 1, lastRefill: now - 400_000 }],
+  ]);
+
+  const removed = sweepRateLimitBuckets(buckets, now, 300000);
+  assert.equal(removed, 1);
+  assert.ok(buckets.has("fresh"));
+  assert.ok(!buckets.has("stale"));
+});
+
+test("ratelimit: getClientIp reads X-Forwarded-For (baseline ★N4 behaviour)", () => {
+  // Pinned on purpose: the first hop is trusted unconditionally, which lets a client spoof its
+  // address. Phase 5 gates this behind TRUST_PROXY; this test will then be updated deliberately.
+  assert.equal(
+    getClientIp(fakeRequest({ "x-forwarded-for": "9.9.9.9, 10.0.0.1" })),
+    "9.9.9.9",
+  );
+  assert.equal(getClientIp(/** @type {any} */ ({ headers: {}, socket: { remoteAddress: "::1" } })), "::1");
+  assert.equal(getClientIp(/** @type {any} */ ({ headers: {}, socket: {} })), "unknown");
+});

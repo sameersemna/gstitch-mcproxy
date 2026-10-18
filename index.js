@@ -15,6 +15,25 @@ const {
   recordMetrics,
   renderPrometheusMetrics,
 } = require("./src/observability/metrics.js");
+const {
+  escapeHtml,
+  formatInlineMarkdown,
+  sendJson,
+  sendText,
+  sendHtml,
+  sendJsonRpcError,
+} = require("./src/http/respond.js");
+const {
+  setCorsHeaders: setCorsHeadersWith,
+  validateOrigin: validateOriginWith,
+  parseHostHeader: parseHostHeaderFrom,
+  redactHeaders,
+} = require("./src/http/security.js");
+const {
+  getClientIp,
+  checkRateLimit: checkRateLimitFor,
+  sweepRateLimitBuckets,
+} = require("./src/http/ratelimit.js");
 
 function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
   if (!fs.existsSync(envPath)) {
@@ -370,19 +389,6 @@ function getConfig() {
     snapshot[key] = configTargets[key].get();
   }
   return snapshot;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function formatInlineMarkdown(text) {
-  return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
 function ensureDirectory(dirPath) {
@@ -753,54 +759,12 @@ function getState() {
   return state;
 }
 
-function getClientIp(req) {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
-  }
-  return req.socket.remoteAddress || "unknown";
-}
-
-function checkRateLimit(clientIp) {
-  const rateLimitBuckets = state.rateLimitBuckets;
-
-  if (!RATE_LIMIT_ENABLED) {
-    return { allowed: true };
-  }
-
-  const now = Date.now();
-  let bucket = rateLimitBuckets.get(clientIp);
-
-  if (!bucket) {
-    bucket = { tokens: RATE_LIMIT_BURST, lastRefill: now };
-    rateLimitBuckets.set(clientIp, bucket);
-  }
-
-  // Refill tokens
-  const elapsed = (now - bucket.lastRefill) / 1000;
-  bucket.tokens = Math.min(RATE_LIMIT_BURST, bucket.tokens + elapsed * RATE_LIMIT_MAX_RPS);
-  bucket.lastRefill = now;
-
-  if (bucket.tokens >= 1) {
-    bucket.tokens -= 1;
-    return { allowed: true };
-  }
-
-  return { allowed: false, retryAfter: Math.ceil(1 / RATE_LIMIT_MAX_RPS) };
-}
-
 // Clean up stale rate limit entries every 5 minutes.
 // NOTE: this interval closes over the *current* `state`, which is the state of the most
 // recently created proxy instance. Phase 2 moves the sweep onto the instance so that two
 // proxies in one process each sweep their own buckets.
 setInterval(() => {
-  const now = Date.now();
-  const buckets = state.rateLimitBuckets;
-  for (const [ip, bucket] of buckets) {
-    if (now - bucket.lastRefill > 300000) {
-      buckets.delete(ip);
-    }
-  }
+  sweepRateLimitBuckets(state.rateLimitBuckets);
 }, 300000).unref();
 
 // --- Connection Tracker (for graceful shutdown) ---
@@ -815,27 +779,6 @@ function trackConnection(socket) {
     activeConnections.delete(socket);
     metrics.activeConnections = activeConnections.size;
   });
-}
-
-function redactHeaders(headers) {
-  const redactedHeaders = {};
-
-  for (const [key, value] of Object.entries(headers || {})) {
-    const lowerKey = key.toLowerCase();
-    if (
-      lowerKey.includes("authorization") ||
-      lowerKey.includes("api-key") ||
-      lowerKey === "stitch_api_key" ||
-      lowerKey === "x-goog-api-key"
-    ) {
-      redactedHeaders[key] = "[redacted]";
-      continue;
-    }
-
-    redactedHeaders[key] = value;
-  }
-
-  return redactedHeaders;
 }
 
 function appendSummaryLog(line) {
@@ -1939,46 +1882,6 @@ function getCachedToken() {
  * @param {{ headers?: Record<string, string>, head?: boolean }} [options] `head` suppresses
  *   the body while keeping `Content-Length`, as HTTP requires for a `HEAD` response.
  */
-function sendJson(res, statusCode, payload, options = {}) {
-  const body = JSON.stringify(payload);
-  const headers = {
-    "Content-Type": "application/json",
-    "Content-Length": String(Buffer.byteLength(body)),
-    ...(options.headers || {}),
-  };
-
-  res.writeHead(statusCode, headers);
-  res.end(options.head ? undefined : body);
-}
-
-/**
- * @param {import("http").ServerResponse} res
- * @param {number} statusCode
- * @param {string} text
- * @param {Record<string, string>} [headers]
- * @param {{ head?: boolean }} [options]
- */
-function sendText(res, statusCode, text, headers = {}, options = {}) {
-  res.writeHead(statusCode, {
-    "Content-Type": "text/plain; charset=utf-8",
-    ...headers,
-  });
-  res.end(options.head ? undefined : text);
-}
-
-/**
- * @param {import("http").ServerResponse} res
- * @param {number} statusCode
- * @param {string} html
- * @param {{ head?: boolean }} [options]
- */
-function sendHtml(res, statusCode, html, options = {}) {
-  res.writeHead(statusCode, {
-    "Content-Type": "text/html; charset=utf-8",
-  });
-  res.end(options.head ? undefined : html);
-}
-
 // --- Upstream header allow-lists (MCP Streamable HTTP) -----------------------
 
 /**
@@ -2135,153 +2038,12 @@ async function readRequestBody(req, maxBytes) {
   };
 }
 
-// --- CORS Helper ---
-
-function setCorsHeaders(res, req) {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", CORS_ORIGIN === "*" ? "*" : origin);
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, STITCH_API_KEY, X-Stitch-Api-Key, Accept");
-  res.setHeader("Access-Control-Max-Age", "86400");
-}
-
-// --- Origin Validation (MCP Spec 2026-07-28) ---
-
-function validateOrigin(req) {
-  // Only validate for /mcp endpoint per MCP spec
-  if (!req.url.startsWith("/mcp")) {
-    return true;
-  }
-
-  const origin = req.headers.origin;
-  if (!origin) {
-    return true; // No origin header is acceptable for non-browser clients
-  }
-
-  // For localhost, allow any localhost origin
-  if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-    return true;
-  }
-
-  // If CORS_ORIGIN is set to a specific value, validate against it
-  if (CORS_ORIGIN !== "*") {
-    return origin === CORS_ORIGIN;
-  }
-
-  return true;
-}
-
-// --- Host safety -------------------------------------------------------------
-
-/**
- * Parses the `Host` request header without ever throwing.
- *
- * Why this exists (finding ★C2): the baseline built the request URL as
- * `new URL(req.url, \`http://${req.headers.host}\`)`. A malformed `Host` (for example
- * `Host: [bad`) made the `URL` constructor throw `ERR_INVALID_URL` inside an `async`
- * handler, outside any `try`/`catch`. The resulting unhandled rejection terminated the
- * process, so anyone able to reach the port could kill the proxy with a single packet.
- *
- * The routing code only ever reads `url.pathname` and `url.searchParams`, never the host,
- * so the URL is now built from a constant base and the `Host` header is validated here,
- * on its own terms.
- *
- * Policy note: this function only rejects values that are *not valid hosts*. Which hosts
- * are *acceptable* (the allow-list that prevents DNS rebinding) is the security model
- * owned by Phase 5 and deliberately not changed here.
- *
- * @param {import("http").IncomingMessage} req
- * @returns {{ host: string|null, reason: string|null }} `reason` is non-null when the header
- *   is malformed; `host` is null when the request legitimately has no `Host` (HTTP/1.0).
- */
-function parseHostHeader(req) {
-  const rawHost = req.headers.host;
-
-  // HTTP/1.0 clients may omit `Host`. Node accepts such requests, and so do we.
-  if (rawHost === undefined || rawHost === null || rawHost === "") {
-    return { host: null, reason: null };
-  }
-
-  if (Array.isArray(rawHost)) {
-    return { host: null, reason: "duplicate Host header" };
-  }
-
-  const value = String(rawHost).trim();
-  if (!value) {
-    return { host: null, reason: null };
-  }
-
-  // A host name, optionally followed by a port; bracketed IPv6 literals are allowed.
-  // Anything with whitespace, slashes or brackets in the wrong place is rejected.
-  if (/[\s/\\@?#]/.test(value)) {
-    return { host: null, reason: "Host header contains illegal characters" };
-  }
-
-  let parsed;
-  try {
-    parsed = new URL(`http://${value}`);
-  } catch {
-    return { host: null, reason: "Host header is not a valid authority" };
-  }
-
-  if (!parsed.hostname) {
-    return { host: null, reason: "Host header has an empty host name" };
-  }
-
-  if (parsed.port !== "") {
-    const port = Number(parsed.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      return { host: null, reason: "Host header has an out-of-range port" };
-    }
-  }
-
-  // `URL` silently rewrites some inputs (for example `[bad` throws, but `a b` would be
-  // escaped). Compare the round-trip so a rewritten value is treated as invalid.
-  if (parsed.host.toLowerCase() !== value.toLowerCase()) {
-    return { host: null, reason: "Host header was rewritten while parsing" };
-  }
-
-  return { host: parsed.host, reason: null };
-}
-
-/**
- * Builds an id-aware JSON-RPC error response and sends it.
- *
- * The `id` is either a single id, `null`, or — for a batch — an array of per-request error
- * objects. Every error path in the proxy funnels through here so that a client waiting on
- * request id N always has its pending call resolved.
- *
- * @param {import("http").ServerResponse} res
- * @param {number} statusCode
- * @param {number} code
- * @param {string} message
- * @param {any} [id]
- * @param {Record<string, string>} [headers]
- */
-function sendJsonRpcError(res, statusCode, code, message, id = null, headers = {}) {
-  if (res.headersSent || res.writableEnded) {
-    return;
-  }
-
-  const payload = Array.isArray(id)
-    ? id.map((entry) => ({ jsonrpc: "2.0", error: { code, message }, id: entry }))
-    : { jsonrpc: "2.0", error: { code, message }, id };
-  const body = JSON.stringify(payload);
-
-  res.writeHead(statusCode, {
-    "Content-Type": "application/json",
-    "Content-Length": String(Buffer.byteLength(body)),
-    ...headers,
-  });
-  res.end(body);
-}
-
 async function routeRequest(req, res) {
   // Track connection for graceful shutdown
   trackConnection(req.socket);
 
   // Set CORS headers on all responses
-  setCorsHeaders(res, req);
+  setCorsHeadersWith(res, req, CORS_ORIGIN);
 
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -2294,7 +2056,7 @@ async function routeRequest(req, res) {
 
   // --- Host validation (finding ★C2) ---
   // Never build the URL from the Host header: a malformed value must not be able to throw.
-  const hostCheck = parseHostHeader(req);
+  const hostCheck = parseHostHeaderFrom(req);
   if (hostCheck.reason !== null) {
     recordMetrics(state.metrics, {
       method: req.method || "UNKNOWN",
@@ -2563,7 +2325,7 @@ async function routeRequest(req, res) {
     }
 
     // --- Origin validation (MCP spec requirement) ---
-    if (!validateOrigin(req)) {
+    if (!validateOriginWith(req, CORS_ORIGIN)) {
       state.metrics.rateLimitedTotal += 1;
       // The spec explicitly permits a JSON-RPC error *without* an id for a rejected Origin.
       return sendJsonRpcError(res, 403, -32001, "Invalid Origin header", null);
@@ -2571,7 +2333,11 @@ async function routeRequest(req, res) {
 
     // --- Rate limiting ---
     const clientIp = getClientIp(req);
-    const rateLimitResult = checkRateLimit(clientIp);
+    const rateLimitResult = checkRateLimitFor(
+      state.rateLimitBuckets,
+      { enabled: RATE_LIMIT_ENABLED, maxRps: RATE_LIMIT_MAX_RPS, burst: RATE_LIMIT_BURST },
+      clientIp,
+    );
     if (!rateLimitResult.allowed) {
       state.metrics.rateLimitedTotal += 1;
       // Read a bounded prefix of the body purely so the 429 can echo the request id.
@@ -3248,18 +3014,22 @@ module.exports = {
   handleRequest,
   // Exported for tests and for Phase 1+ work; not part of the public HTTP contract.
   buildLocalFallbackResponse: buildLocalFallbackResponseFor,
-  validateOrigin,
-  setCorsHeaders,
+  validateOrigin: validateOriginWith,
+  setCorsHeaders: setCorsHeadersWith,
+  parseHostHeader: parseHostHeaderFrom,
   parseAuthHeader,
   parseJsonRpcMetadata,
+  extractJsonRpcIds,
+  extractProjectIdFromBody,
   isTransientUpstreamError,
   describeFetchError,
   redactHeaders,
   renderPrometheusMetrics,
   readRequestBody,
-  checkRateLimit,
+  checkRateLimit: checkRateLimitFor,
   getClientIp,
   resolveLogFilePath,
+  sweepRateLimitBuckets,
   createProxyServerInternals: {
     CONFIG_KEYS,
   },

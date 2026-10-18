@@ -590,3 +590,34 @@ test("★P1 – hop-by-hop and unrelated request headers are not forwarded", asy
     "unrelated headers must not be forwarded upstream",
   );
 });
+
+// ---------------------------------------------------------------------------
+// ★C2 regression guard: valid-but-unusual Host values must NOT be rejected
+// ---------------------------------------------------------------------------
+
+test("★C2 – legitimate Host values are still accepted after Host validation", async (t) => {
+  // Caught by the Phase 2 unit tests: comparing `parsed.host` against the raw header rejected
+  // `EXAMPLE.com` and `example.com:80`, because `URL` case-folds host names and drops default
+  // ports. Host validation must reject malformed values without rejecting valid ones.
+  const proxy = await startProxy({ STITCH_API_KEY: "env-key" });
+  t.after(() => proxy.stop());
+
+  for (const host of [
+    "localhost",
+    "localhost:8787",
+    "127.0.0.1:11401",
+    "EXAMPLE.com",
+    "Host.Example:8080",
+    "example.com:80",
+    "example.com:443",
+    "[::1]:80",
+  ]) {
+    const response = await rawRequest(
+      proxy.port,
+      `GET /health HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`,
+    );
+    assert.equal(response.status, 200, `Host ${host} should be accepted, got ${response.status}`);
+  }
+
+  assert.equal(await isServerAlive(proxy.port), true);
+});
