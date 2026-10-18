@@ -12,8 +12,9 @@
  *   - ★C1, P3, ★S1, ★S2, ★S3, ★S6    → `test/phase3.test.js`, `test/phase4.test.js`
  *   - ★C3, ★C4, ★N1, ★N4, ★N9, ★N10, ★N11 → `test/phase5.test.js`
  *
- * What remains below is deliberately deferred: P4 needs a live probe with the owner's key, and
- * S5 is a performance refactor of the logging path that has no correctness impact.
+ * What remains below is deliberately deferred: P4 needs a live probe with the owner's key —
+ * `scripts/live-probe.js` now exists for exactly that, guarded by `test/probe.test.js` — and S5 is
+ * a performance refactor of the logging path that has no correctness impact.
  *
  * `test.todo()` bodies are *documentation*: `node:test` does not execute them.
  */
@@ -26,7 +27,8 @@ const test = require("node:test");
 
 test.todo(
   "P4 – record whether Stitch implements resources/list and resources/templates/list " +
-    "(needs an opt-in live probe with the owner's key; `scripts/live-probe.js` is the vehicle)",
+    "(needs an opt-in live probe with the owner's key; " +
+    "`npm run probe:live -- --i-understand` prints the answer to record here)",
 );
 
 test.todo(

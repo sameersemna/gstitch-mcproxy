@@ -343,6 +343,11 @@ showed ~29,000 failed discovery cycles in a single day. The proxy now answers
 `GET`, `DELETE`, and `PUT` on `/mcp` are also answered locally with a JSON-RPC 405. Stitch
 returns a Google HTML error page for these, which is not a valid MCP response.
 
+The code also carries empty results for `resources/list` and `resources/templates/list`, but
+leaves them **out** of `LOCAL_FALLBACK_METHODS` because whether Stitch implements them has never
+been verified (finding P4 in `PROGRESS.md`). `scripts/live-probe.js` answers that question against
+the real endpoint; see [Probing P4](#probing-p4) below.
+
 ## Metrics (Prometheus)
 
 `GET /metrics` returns Prometheus-format metrics:
@@ -425,6 +430,29 @@ It is never part of `npm test` (which uses a local fake upstream) and it reports
 ```bash
 STITCH_LIVE=1 ./test.sh
 ```
+
+### Probing P4
+
+`scripts/live-probe.js` is the second opt-in live script. It asks Stitch directly whether it
+implements `resources/list` and `resources/templates/list` — the one question about the upstream
+that cannot be answered from code or from the fake upstream.
+
+It sends **read-only discovery calls only** (`initialize`, `tools/list`, then the three list
+methods); no project is touched and no generation quota is spent. `tools/list` is the control: if
+it fails, the other rows are reported as inconclusive and the script exits `1`.
+
+```bash
+STITCH_API_KEY=... npm run probe:live -- --i-understand
+```
+
+Three guards, because it spends your credential:
+
+- `--i-understand` is required; without it the script prints usage and exits `2`;
+- it refuses to run when `CI` is set, and the suite never invokes it (`test/probe.test.js` asserts this);
+- the key is read from `STITCH_API_KEY` only — never from an argument, where it would land in shell history.
+
+Add `--json` for machine-readable output. The last line of the report is the exact summary to
+record in `PROGRESS.md` §10.2 and `test/bugs.test.js` to close the finding.
 
 Run the proxy:
 

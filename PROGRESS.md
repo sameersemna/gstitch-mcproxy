@@ -1,7 +1,7 @@
 # PROGRESS LEDGER — gstitch-mcproxy hardening
 
 > **This file is the memory of a long-horizon task.** Read it first, update it last.
-> Branch: `hardening/v1` · Baseline: `2578c26` · Never commit to `main`.
+> Released `v1.0.0` on 2026-10-18 (PR #1, `hardening/v1` → `main`, branch deleted). Baseline: `2578c26`.
 
 ---
 
@@ -9,22 +9,22 @@
 
 | Field   | Value                                                                                                          |
 | ------- | -------------------------------------------------------------------------------------------------------------- |
-| Phase   | **all phases complete (0–10)**                                                                                 |
-| Step    | final verification done; opening the PR is the only remaining action                                           |
-| Status  | Gates green: 303 tests → **301 pass / 2 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
+| Phase   | **all phases complete (0–10); released as `v1.0.0`**                                                           |
+| Step    | P4 probe written; the remaining work is S5 (async I/O) and running the probe with the owner's key              |
+| Status  | Gates green: 308 tests → **306 pass / 2 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
 | Started | 2026-10-17                                                                                                     |
 
 ## 2. Last green commit
 
-| Field     | Value                                                   |
-| --------- | ------------------------------------------------------- |
-| Branch    | `hardening/v1` (22 commits ahead of `main` @ `2578c26`) |
-| test      | 301 pass / 2 todo / 0 fail (303 tests, ~10 s)           |
-| lint      | clean                                                   |
-| typecheck | clean                                                   |
-| verify    | `npm run verify` exits 0                                |
-| coverage  | 94 % statements                                         |
-| run.sh    | starts, `GET /health` ⇒ 200, `SIGTERM` ⇒ clean exit     |
+| Field     | Value                                                                  |
+| --------- | ---------------------------------------------------------------------- |
+| Branch    | `main` @ `v1.0.0` (`dd3448e`) plus the P4 probe commit                 |
+| test      | 306 pass / 2 todo / 0 fail (308 tests, ~10 s)                          |
+| lint      | clean                                                                  |
+| typecheck | clean (`scripts/**/*.js` is in `tsconfig.json` `include`)              |
+| verify    | `npm run verify` exits 0                                               |
+| coverage  | 94 % statements                                                        |
+| run.sh    | starts, `GET /health` ⇒ 200 (`version: 1.0.0`), `SIGTERM` ⇒ clean exit |
 
 ## 3. Phase checklist
 
@@ -352,7 +352,7 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 | ★P1 | ✅ **YES**     | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS). | **FIXED `dfd243c`** — 5 tests; explicit request/response allow-lists                                                      |
 | ★P2 | ✅ **YES**     | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths.                                                                                                                                                                                                                                                      | **FIXED `dfd243c`** — 7 tests incl. `id:0`, string ids and arrays                                                         |
 | P3  | read-only      | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element.                                                                                                                                       | **FIXED `b96e3e7`** — `classifyRequest` reduces a batch to its most unsafe element, and `rewriteJsonRpcId` handles arrays |
-| P4  | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. Whether Stitch implements the others is **unknown** → `scripts/live-probe.js` (Phase 7), owner key required.                                                                                                                                                        | Phase 7                                                                                                                   |
+| P4  | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. Whether Stitch implements the others is **unknown** → `scripts/live-probe.js` (written; `npm run probe:live -- --i-understand`), owner key required.                                                                                                                | Phase 7                                                                                                                   |
 | P5  | read-only      | `notifications/cancelled` is forwarded upstream but never aborts the in-flight upstream request. Note: on Streamable HTTP ≥ 2026-07-28 cancellation _is_ stream closure, so the proxy's own client-close handling is the primary mechanism.                                                                                                                                                                       | Phase 3                                                                                                                   |
 
 ### 10.3 Streaming and resource handling
@@ -396,11 +396,11 @@ no annotations to warn clients before unsafe calls.
 
 ## 11. Known issues / deferred
 
-| Issue                                                   | Why deferred                                                                                                |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **context7 unavailable** (`Invalid API key`)            | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored. |
-| P4 — unknown whether Stitch implements `resources/list` | Needs a live probe with the owner's key, which must be opt-in.                                              |
-| Live `tools/list` annotations from Stitch are unknown   | Classification currently relies on the built-in table; upstream annotations take precedence once observed.  |
+| Issue                                                   | Why deferred                                                                                                                                                           |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **context7 unavailable** (`Invalid API key`)            | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored.                                                            |
+| P4 — unknown whether Stitch implements `resources/list` | Probe written (`npm run probe:live -- --i-understand`); needs the owner's key. Opt-in only: it refuses to run when `CI` is set, and `test/probe.test.js` asserts that. |
+| Live `tools/list` annotations from Stitch are unknown   | Classification currently relies on the built-in table; upstream annotations take precedence once observed.                                                             |
 
 ## 12. Owner decisions (answered 2026-10-18)
 
@@ -482,23 +482,23 @@ finished code.
 | `test/config.test.js`           | 13     | config drift, owner defaults, coherence                                                 |
 | `test/deploy.test.js`           | 18     | Dockerfile, compose, systemd, docs consistency                                          |
 | `test/bugs.test.js`             | 2 todo | P4, S5 — deliberately deferred                                                          |
+| `test/probe.test.js`            | 5      | P4 probe safety rails: opt-in flag, CI refusal, key from env only, not wired into CI    |
 
 No test contacts the real Stitch endpoint.
 
 ## 16. Next action (exact, for a fresh session)
 
-> Open the pull request `hardening/v1 → main`.
+> **Released.** PR #1 merged `hardening/v1` → `main` on 2026-10-18 (`dd3448e`), the branch was
+> deleted, and `v1.0.0` is tagged with `package.json`, `package-lock.json` and `index.js`
+> `VERSION` all at `1.0.0`.
 >
-> Title: `Harden, optimize and perfect gstitch-mcproxy`
+> Two follow-ups remain:
 >
-> The body should carry:
->
-> 1. the classification and idempotency tables (README "Request classification and idempotency");
-> 2. the before → after table from §14 above;
-> 3. the **migration notes** from `CHANGELOG.md` — four defaults changed (public origins refused,
->    `/health` reduced, CORS scoped to `/mcp`, rate limiting on by default);
-> 4. links to ADRs 0001–0006;
-> 5. the two deferred findings (P4, S5) and why.
->
-> After merge: delete `hardening/v1`, and consider the opt-in live probe (`scripts/live-probe.js`)
-> with the owner's key to close P4.
+> 1. **Close P4** — run the probe with the owner's key, then replace the `test.todo()` in
+>    `test/bugs.test.js` with the observed answer and update §10.2:
+>    `STITCH_API_KEY=... npm run probe:live -- --i-understand`
+>    Verdicts are `implemented`, `implemented (empty)`, `not implemented (stream reset)` or
+>    `not implemented (method not found)`. Only the last two justify a `LOCAL_FALLBACK_METHODS`
+>    entry.
+> 2. **Close S5** — move the summary-log store and `getAccessToken()` off `readFileSync`/
+>    `appendFileSync`/`statSync`/`execSync`. Behaviour must not change; the tests are the guard.

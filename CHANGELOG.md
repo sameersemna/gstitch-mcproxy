@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/live-probe.js`** — the opt-in probe for finding P4. It asks the real Stitch endpoint
+  whether it implements `resources/list` and `resources/templates/list`, sending read-only
+  discovery calls only (`initialize`, `tools/list`, then the three list methods). `tools/list` is
+  the control: if it fails, every other row is reported as inconclusive and the script exits `1`.
+  Run it with `npm run probe:live -- --i-understand`. It refuses to run when `CI` is set, reads
+  the key from `STITCH_API_KEY` only (never argv), and `test/probe.test.js` asserts all three
+  guards. `--json` gives machine-readable output.
+
 ## [1.0.0] — 2026-10-18
 
 First release after the hardening programme. The headline property is unchanged: **zero runtime
