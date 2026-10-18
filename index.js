@@ -38,6 +38,8 @@ const {
 const { classifyRequest, annotationsForTool } = require("./src/mcp/classify.js");
 const { decideRetry } = require("./src/upstream/retry.js");
 const { createIdempotencyStore } = require("./src/idempotency/store.js");
+const { streamWithBackpressure } = require("./src/upstream/stream.js");
+const { createSemaphore } = require("./src/upstream/limiter.js");
 
 function loadEnvFile(envPath = path.resolve(process.cwd(), ".env")) {
   if (!fs.existsSync(envPath)) {
@@ -124,6 +126,12 @@ let REPLAY_MAX_TOTAL_BYTES;
 let ANNOTATE_TOOLS;
 let SAFE_TOOLS_CSV;
 let UNSAFE_TOOLS_CSV;
+let STREAM_IDLE_TIMEOUT_MS;
+let STREAM_MAX_DURATION_MS;
+let SERVER_HEADERS_TIMEOUT_MS;
+let SERVER_KEEP_ALIVE_TIMEOUT_MS;
+let MAX_CONCURRENT_UPSTREAM;
+let CONCURRENCY_QUEUE_WAIT_MS;
 
 function parseBoolean(value, fallback) {
   return String(value === undefined || value === null ? fallback : value).toLowerCase() === "true";
@@ -187,6 +195,12 @@ const CONFIG_KEYS = [
   "ANNOTATE_TOOLS",
   "SAFE_TOOLS_CSV",
   "UNSAFE_TOOLS_CSV",
+  "STREAM_IDLE_TIMEOUT_MS",
+  "STREAM_MAX_DURATION_MS",
+  "SERVER_HEADERS_TIMEOUT_MS",
+  "SERVER_KEEP_ALIVE_TIMEOUT_MS",
+  "MAX_CONCURRENT_UPSTREAM",
+  "CONCURRENCY_QUEUE_WAIT_MS",
 ];
 
 /**
@@ -302,6 +316,36 @@ const configTargets = (() => {
   define("ANNOTATE_TOOLS", () => ANNOTATE_TOOLS, (v) => (ANNOTATE_TOOLS = v));
   define("SAFE_TOOLS_CSV", () => SAFE_TOOLS_CSV, (v) => (SAFE_TOOLS_CSV = v));
   define("UNSAFE_TOOLS_CSV", () => UNSAFE_TOOLS_CSV, (v) => (UNSAFE_TOOLS_CSV = v));
+  define(
+    "STREAM_IDLE_TIMEOUT_MS",
+    () => STREAM_IDLE_TIMEOUT_MS,
+    (v) => (STREAM_IDLE_TIMEOUT_MS = v),
+  );
+  define(
+    "STREAM_MAX_DURATION_MS",
+    () => STREAM_MAX_DURATION_MS,
+    (v) => (STREAM_MAX_DURATION_MS = v),
+  );
+  define(
+    "SERVER_HEADERS_TIMEOUT_MS",
+    () => SERVER_HEADERS_TIMEOUT_MS,
+    (v) => (SERVER_HEADERS_TIMEOUT_MS = v),
+  );
+  define(
+    "SERVER_KEEP_ALIVE_TIMEOUT_MS",
+    () => SERVER_KEEP_ALIVE_TIMEOUT_MS,
+    (v) => (SERVER_KEEP_ALIVE_TIMEOUT_MS = v),
+  );
+  define(
+    "MAX_CONCURRENT_UPSTREAM",
+    () => MAX_CONCURRENT_UPSTREAM,
+    (v) => (MAX_CONCURRENT_UPSTREAM = v),
+  );
+  define(
+    "CONCURRENCY_QUEUE_WAIT_MS",
+    () => CONCURRENCY_QUEUE_WAIT_MS,
+    (v) => (CONCURRENCY_QUEUE_WAIT_MS = v),
+  );
 
   return targets;
 })();
@@ -383,6 +427,22 @@ function resolveConfigFromEnv(env) {
     ANNOTATE_TOOLS: parseBoolean(env.ANNOTATE_TOOLS, "true"),
     SAFE_TOOLS_CSV: parseCsvSet(env.SAFE_TOOLS, ""),
     UNSAFE_TOOLS_CSV: parseCsvSet(env.UNSAFE_TOOLS, ""),
+
+    // --- Streaming deadlines (ADR 0004) ---
+    // Three separate limits, because a slow-but-alive stream must not be killed by the same
+    // rule as a stalled one.
+    STREAM_IDLE_TIMEOUT_MS: parseInteger(env.STREAM_IDLE_TIMEOUT_MS, 60000),
+    STREAM_MAX_DURATION_MS: parseInteger(env.STREAM_MAX_DURATION_MS, 30 * 60 * 1000),
+
+    // --- Server socket timeouts (★S6) ---
+    // Explicit rather than Node's defaults (300000/60000/5000), because a 60 s+ Stitch generation
+    // must not be cut by an invisible socket timeout.
+    SERVER_HEADERS_TIMEOUT_MS: parseInteger(env.SERVER_HEADERS_TIMEOUT_MS, 60000),
+    SERVER_KEEP_ALIVE_TIMEOUT_MS: parseInteger(env.SERVER_KEEP_ALIVE_TIMEOUT_MS, 5000),
+    // Cap on concurrently forwarded upstream requests. 0 disables the cap.
+    MAX_CONCURRENT_UPSTREAM: parseInteger(env.MAX_CONCURRENT_UPSTREAM, 32),
+    // How long a request may wait for an upstream slot before answering 503 + Retry-After.
+    CONCURRENCY_QUEUE_WAIT_MS: parseInteger(env.CONCURRENCY_QUEUE_WAIT_MS, 10000),
   };
 }
 
@@ -784,6 +844,9 @@ function createState(config) {
     activeConnections: new Set(),
     tokenCache: { value: null, fetchedAt: 0 },
     // In-flight coalescing and orphaned-result replay (ADR 0003).
+    // Bounds concurrent upstream requests (finding ★S6). The queue has a maximum wait, so a
+    // saturated proxy answers 503 + Retry-After instead of hanging.
+    upstreamLimiter: createSemaphore(cfg.MAX_CONCURRENT_UPSTREAM),
     idempotency: createIdempotencyStore({
       replayWindowMs: cfg.REPLAY_WINDOW_MS,
       maxEntries: cfg.REPLAY_MAX_ENTRIES,
@@ -2706,22 +2769,36 @@ async function routeRequest(req, res) {
 
       /** @returns {Promise<Response>} */
       const performFetch = () =>
-        fetchUpstreamWithRetry({
-          url: STITCH_URL,
-          method: req.method || "POST",
-          headers: buildForwardHeaders(req, token, apiKey, upstreamProjectId),
-          body,
-          signal: controller.signal,
-          safe: classification.safe,
-          maxAttempts,
-          baseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,
-          deadlineAt,
-          isTimedOut: () => timedOut,
-          isClientGone: () => clientDisconnected,
-          onOutcomeUnknown: () => {
-            outcomeUnknown = true;
-          },
-        });
+        state.upstreamLimiter
+          .run(
+            () =>
+              fetchUpstreamWithRetry({
+                url: STITCH_URL,
+                method: req.method || "POST",
+                headers: buildForwardHeaders(req, token, apiKey, upstreamProjectId),
+                body,
+                signal: controller.signal,
+                safe: classification.safe,
+                maxAttempts,
+                baseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,
+                deadlineAt,
+                isTimedOut: () => timedOut,
+                isClientGone: () => clientDisconnected,
+                onOutcomeUnknown: () => {
+                  outcomeUnknown = true;
+                },
+              }),
+            CONCURRENCY_QUEUE_WAIT_MS,
+          )
+          .catch((limitError) => {
+            // Saturation is a *server-side* condition, so it must be a retryable, explicit
+            // answer rather than a hung request or a generic 502.
+            if (/** @type {any} */ (limitError)?.code === "SEMAPHORE_TIMEOUT") {
+              /** @type {any} */ (limitError).proxyStatus = 503;
+              /** @type {any} */ (limitError).retryAfterSeconds = 2;
+            }
+            throw limitError;
+          });
 
       // --- In-flight coalescing for unsafe requests (ADR 0003) ---------------------------
       // A second identical unsafe request arriving while the first is still running must not
@@ -2907,60 +2984,83 @@ async function routeRequest(req, res) {
           "X-Accel-Buffering": "no",
         });
 
-        const streamChunks = [];
-        try {
-          for await (const chunk of response.body) {
-            if (clientDisconnected || res.writableEnded) {
-              break;
-            }
-            res.write(chunk);
-            streamChunks.push(chunk);
-          }
+        // Findings ★S1/S2/S3 (ADR 0004): a real pipeline with backpressure, three independent
+        // deadlines, and a bounded capture buffer that only exists when debug logging is on.
+        const captureEnabled = LOG_ENABLED && LOG_LEVEL === "debug";
+        const streamAbort = new AbortController();
+        const onStreamClientClose = () => {
           if (!res.writableEnded) {
-            res.end();
+            clientDisconnected = true;
+            streamAbort.abort();
           }
-        } catch (streamError) {
-          if (!res.writableEnded) {
-            res.end();
-          }
-          throw streamError;
-        }
+        };
+        res.on("close", onStreamClientClose);
+
+        const streamResult = await streamWithBackpressure(response.body, res, {
+          idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+          totalTimeoutMs: STREAM_MAX_DURATION_MS,
+          maxCaptureBytes: captureEnabled ? LOG_MAX_BODY_CHARS : 0,
+          signal: streamAbort.signal,
+        });
+
+        res.off("close", onStreamClientClose);
 
         const durationMs = Date.now() - requestStartedAt;
         const durationClass = classifyDuration(durationMs);
         const methodSummary = formatMethodsForSummary(body);
-        const fullResponseBody = Buffer.concat(streamChunks).toString("utf8");
+
+        // A truncated stream is an error for the client: it must not look like a clean end.
+        if (!streamResult.ok && !streamResult.aborted) {
+          const reason = streamResult.idleTimedOut
+            ? `no data for ${STREAM_IDLE_TIMEOUT_MS}ms`
+            : streamResult.totalTimedOut
+              ? `stream exceeded ${STREAM_MAX_DURATION_MS}ms`
+              : describeFetchError(streamResult.error);
+          console.warn(`⚠️ Upstream stream ended abnormally: ${reason}`);
+        }
 
         recordMetrics(state.metrics, {
           method: req.method,
           path: url.pathname,
           status: response.status,
           durationMs,
-          isError: response.status >= 500,
+          isError: response.status >= 500 || !streamResult.ok,
         });
 
         if (!(req.method === "GET" && LOG_SKIP_MCP_GET)) {
           appendSummaryLog(
             `${timestamp} - ID: ${requestLogId} - ${req.method} ${req.url} - RPC: ${methodSummary} - API_KEY: ${
               apiKey ? "configured" : "none"
-            } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - STREAM: true\n`,
+            } - PROJECT_ID: ${projectId || "none"} - STATUS: ${response.status} - DURATION_MS: ${durationMs} - LATENCY: ${durationClass} - STREAM: true - BYTES: ${streamResult.bytes}${
+              streamResult.idleTimedOut
+                ? " - IDLE_TIMEOUT: true"
+                : streamResult.totalTimedOut
+                  ? " - TOTAL_TIMEOUT: true"
+                  : streamResult.aborted
+                    ? " - CLIENT_ABORTED: true"
+                    : ""
+            }\n`,
           );
         }
 
-        writeDetailedDebugLog({
-          requestLogId,
-          timestamp,
-          req,
-          url,
-          projectId,
-          requestBody: body,
-          requestContentType: req.headers["content-type"],
-          durationMs,
-          durationClass,
-          responseStatus: response.status,
-          responseHeaders: Object.fromEntries(response.headers.entries()),
-          responseBody: fullResponseBody,
-        });
+        if (captureEnabled) {
+          writeDetailedDebugLog({
+            requestLogId,
+            timestamp,
+            req,
+            url,
+            projectId,
+            requestBody: body,
+            requestContentType: req.headers["content-type"],
+            durationMs,
+            durationClass,
+            responseStatus: response.status,
+            responseHeaders: Object.fromEntries(response.headers.entries()),
+            responseBody: streamResult.truncatedForLog
+              ? `${streamResult.capturedBody}\n\n[truncated stream capture at ${LOG_MAX_BODY_CHARS} chars]`
+              : streamResult.capturedBody,
+          });
+        }
 
         // Finding ★C5: without this `return` control fell through to the trailing
         // `sendJson(res, 404, ...)`, which threw `ERR_HTTP_HEADERS_SENT`. That unhandled
@@ -3044,6 +3144,19 @@ async function routeRequest(req, res) {
       const durationClass = classifyDuration(durationMs);
       const isTimeout = error.name === "AbortError" || error.name === "TimeoutError";
       const errorDetail = describeFetchError(error);
+
+      // Upstream concurrency saturation is a server-side, retryable condition.
+      if (/** @type {any} */ (error)?.code === "SEMAPHORE_TIMEOUT") {
+        res.setHeader("Retry-After", "2");
+        return sendJsonRpcError(
+          res,
+          503,
+          -32009,
+          "Proxy is at its upstream concurrency limit. Retry shortly.",
+          requestIds,
+          { "Retry-After": "2" },
+        );
+      }
 
       // Client went away mid-flight: nothing to respond to, just record it.
       if (clientDisconnected && !res.writableEnded) {
@@ -3400,7 +3513,15 @@ function createProxyServer(options = {}) {
     }
   }
 
+  /** @type {Set<import("http").ServerResponse>} */
+  const liveResponses = new Set();
+
   const server = http.createServer((req, res) => {
+    // Tracked so tests can assert on real backpressure (`writableLength`) without reaching into
+    // Node internals. Removed on close, so the set cannot grow.
+    liveResponses.add(res);
+    res.on("close", () => liveResponses.delete(res));
+
     // `handleRequest` never rejects; the extra guard is defensive only.
     handleRequest(req, res).catch((error) => {
       console.error("❌ Unhandled rejection from handleRequest:", error);
@@ -3439,13 +3560,22 @@ function createProxyServer(options = {}) {
     }
   });
 
-  // NOTE: explicit `requestTimeout` / `headersTimeout` / `keepAliveTimeout` values and a
-  // concurrency cap belong to finding ★S6 (Phase 4). Only `clientError` handling, which is
-  // part of crash-proofing, is done here.
+  // --- Explicit socket timeouts (finding ★S6, ADR 0004) ------------------------------
+  // Node's defaults are requestTimeout=300000, headersTimeout=60000, keepAliveTimeout=5000.
+  // They are invisible to operators and, worse, a 60 s+ Stitch generation could be cut by a
+  // timeout nobody configured. `requestTimeout` gets a grace margin so the proxy's own
+  // JSON-RPC deadline always fires first and the client gets a parseable error.
+  server.requestTimeout = state.config.REQUEST_TIMEOUT_MS + 5000;
+  server.headersTimeout = Math.min(
+    state.config.SERVER_HEADERS_TIMEOUT_MS,
+    server.requestTimeout - 1000,
+  );
+  server.keepAliveTimeout = state.config.SERVER_KEEP_ALIVE_TIMEOUT_MS;
 
   // Expose the instance state for tests and graceful shutdown without widening the
   // `http.Server` type for every consumer.
   /** @type {any} */ (server).state = state;
+  /** @type {any} */ (server).liveResponses = liveResponses;
 
   liveProxies.set(server, fingerprint);
   server.on("close", () => {
