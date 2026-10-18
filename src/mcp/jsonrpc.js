@@ -138,8 +138,11 @@ function extractProjectIdFromBody(body) {
 
 /**
  * The empty results used for methods that can be answered without going upstream.
- * `resources/list` and `resources/templates/list` are supported by the code but not enabled by
- * default, because whether Stitch implements them is unverified (finding P4).
+ *
+ * Only `prompts/list` is enabled by default. The other two are carried here so an operator can
+ * enable them with `LOCAL_FALLBACK_METHODS`, but they stay off because Stitch *does* implement
+ * them — verified against the live endpoint on 2026-10-18 (finding P4): both answer `200` with an
+ * empty collection, so answering them locally would hide real data.
  */
 const EMPTY_FALLBACK_RESULTS = {
   "prompts/list": { prompts: [] },

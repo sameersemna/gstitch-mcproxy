@@ -9,8 +9,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.1] — 2026-10-18
 
-Patch release: the first green CI run, plus the P4 probe and the S5 refactor that were written
-after `1.0.0` was tagged. No behaviour changes beyond the `1.0.0` migration notes.
+Patch release: the first green CI run, the P4 probe run against the live endpoint, and the S5
+refactor — all written after `1.0.0` was tagged. No behaviour changes beyond the `1.0.0`
+migration notes.
+
+### Verified — finding P4
+
+- **Stitch implements `resources/list` and `resources/templates/list`.** The live probe answered
+  `200` with an empty collection for both, while `prompts/list` still resets the HTTP/2 stream.
+  Only `prompts/list` is answered locally, which was already the default; the empty results for
+  the resource methods remain available for `LOCAL_FALLBACK_METHODS` but stay off. `test/bugs.test.js`
+  now asserts that default instead of carrying the finding as a `todo`.
 
 ### Fixed — CI
 

@@ -8,19 +8,19 @@
 
 ## 1. Current phase / step / status
 
-| Field   | Value                                                                                                      |
-| ------- | ---------------------------------------------------------------------------------------------------------- |
-| Phase   | **all phases complete (0–10); released as `v1.0.1`**                                                       |
-| Step    | CI green on Node 20/22/24 and Docker; the only remaining work is running the P4 probe with the owner's key |
-| Status  | Gates green: 313 tests → **312 pass / 1 todo / 0 fail** on Node 20 and 26, lint/format/typecheck clean     |
-| Started | 2026-10-17                                                                                                 |
+| Field   | Value                                                                                                  |
+| ------- | ------------------------------------------------------------------------------------------------------ |
+| Phase   | **all phases complete (0–10); released as `v1.0.1`**                                                   |
+| Step    | no open findings: P4 answered, S5 fixed, CI green on Node 20/22/24 and Docker                          |
+| Status  | Gates green: 313 tests → **313 pass / 0 todo / 0 fail** on Node 20 and 26, lint/format/typecheck clean |
+| Started | 2026-10-17                                                                                             |
 
 ## 2. Last green commit
 
 | Field     | Value                                                                  |
 | --------- | ---------------------------------------------------------------------- |
 | Branch    | `main` @ `v1.0.1`, CI run 39133550810 green on all four jobs           |
-| test      | 312 pass / 1 todo / 0 fail (313 tests, ~10 s), Node 20 and 26          |
+| test      | 313 pass / 0 todo / 0 fail (313 tests, ~10 s), Node 20 and 26          |
 | lint      | clean                                                                  |
 | typecheck | clean (`scripts/**/*.js` is in `tsconfig.json` `include`)              |
 | verify    | `npm run verify` exits 0                                               |
@@ -348,13 +348,13 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 
 ### 10.2 Protocol correctness
 
-| ID  | Reproduced     | Evidence                                                                                                                                                                                                                                                                                                                                                                                                          | Regression test                                                                                                           |
-| --- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| ★P1 | ✅ **YES**     | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS). | **FIXED `dfd243c`** — 5 tests; explicit request/response allow-lists                                                      |
-| ★P2 | ✅ **YES**     | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths.                                                                                                                                                                                                                                                      | **FIXED `dfd243c`** — 7 tests incl. `id:0`, string ids and arrays                                                         |
-| P3  | read-only      | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element.                                                                                                                                       | **FIXED `b96e3e7`** — `classifyRequest` reduces a batch to its most unsafe element, and `rewriteJsonRpcId` handles arrays |
-| P4  | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. Whether Stitch implements the others is **unknown** → `scripts/live-probe.js` (written; `npm run probe:live -- --i-understand`), owner key required.                                                                                                                | Phase 7                                                                                                                   |
-| P5  | read-only      | `notifications/cancelled` is forwarded upstream but never aborts the in-flight upstream request. Note: on Streamable HTTP ≥ 2026-07-28 cancellation _is_ stream closure, so the proxy's own client-close handling is the primary mechanism.                                                                                                                                                                       | Phase 3                                                                                                                   |
+| ID  | Reproduced     | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                              | Regression test                                                                                                           |
+| --- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| ★P1 | ✅ **YES**     | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS).                                     | **FIXED `dfd243c`** — 5 tests; explicit request/response allow-lists                                                      |
+| ★P2 | ✅ **YES**     | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths.                                                                                                                                                                                                                                                                                          | **FIXED `dfd243c`** — 7 tests incl. `id:0`, string ids and arrays                                                         |
+| P3  | read-only      | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element.                                                                                                                                                                           | **FIXED `b96e3e7`** — `classifyRequest` reduces a batch to its most unsafe element, and `rewriteJsonRpcId` handles arrays |
+| P4  | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. **Answered 2026-10-18 via `npm run probe:live -- --i-understand`**: `prompts/list` resets the HTTP/2 stream (`ERR_HTTP2_STREAM_ERROR`), while `resources/list` and `resources/templates/list` both answer `200` with an empty collection. The default (only `prompts/list` local) is therefore correct. | **CLOSED 2026-10-18** — encoded as an assertion in `test/bugs.test.js`                                                    |
+| P5  | read-only      | `notifications/cancelled` is forwarded upstream but never aborts the in-flight upstream request. Note: on Streamable HTTP ≥ 2026-07-28 cancellation _is_ stream closure, so the proxy's own client-close handling is the primary mechanism.                                                                                                                                                                                                           | Phase 3                                                                                                                   |
 
 ### 10.3 Streaming and resource handling
 
@@ -397,11 +397,10 @@ no annotations to warn clients before unsafe calls.
 
 ## 11. Known issues / deferred
 
-| Issue                                                   | Why deferred                                                                                                                                                           |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **context7 unavailable** (`Invalid API key`)            | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored.                                                            |
-| P4 — unknown whether Stitch implements `resources/list` | Probe written (`npm run probe:live -- --i-understand`); needs the owner's key. Opt-in only: it refuses to run when `CI` is set, and `test/probe.test.js` asserts that. |
-| Live `tools/list` annotations from Stitch are unknown   | Classification currently relies on the built-in table; upstream annotations take precedence once observed.                                                             |
+| Issue                                                 | Why deferred                                                                                                |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **context7 unavailable** (`Invalid API key`)          | Used the spec source text + local runtime probes instead. Re-verify with context7 when the key is restored. |
+| Live `tools/list` annotations from Stitch are unknown | Classification currently relies on the built-in table; upstream annotations take precedence once observed.  |
 
 ## 12. Owner decisions (answered 2026-10-18)
 
@@ -471,21 +470,21 @@ finished code.
 
 ## 15. Test suite
 
-| File                            | Tests  | Covers                                                                                          |
-| ------------------------------- | ------ | ----------------------------------------------------------------------------------------------- |
-| `test/characterization.test.js` | 39     | every route, credential precedence, fallbacks, CORS, metrics text, logging                      |
-| `test/phase1.test.js`           | 29     | ★C2, ★S4, ★N3, ★P2, ★N2, ★P1                                                                    |
-| `test/phase1b.test.js`          | 11     | ★N5, ★N6, ★N8                                                                                   |
-| `test/phase3.test.js`           | 86     | classification, retry phases, coalescing, orphan capture, idempotency keys, annotations         |
-| `test/phase4.test.js`           | 14     | three deadlines, backpressure, bounded capture, concurrency limiter                             |
-| `test/phase5.test.js`           | 41     | origin/host policy, scoped CORS, viewer protection, redaction, ★N9–★N11                         |
-| `test/unit.test.js`             | 52     | pure modules: jsonrpc, errors, metrics, respond, security, ratelimit                            |
-| `test/config.test.js`           | 13     | config drift, owner defaults, coherence                                                         |
-| `test/deploy.test.js`           | 18     | Dockerfile, compose, systemd, docs consistency                                                  |
-| `test/bugs.test.js`             | 1 todo | P4 — deliberately deferred                                                                      |
-| `test/probe.test.js`            | 5      | P4 probe safety rails: opt-in flag, CI refusal, key from env only, not wired into CI            |
-| `test/s5-async.test.js`         | 4      | S5: no sync fs/exec on the request path, viewer sees async writes, rotation still caps          |
-| `test/deploy.test.js`           | 20     | Dockerfile, compose, systemd, docs, and two CI guards (no glob in `--test`, health before stop) |
+| File                            | Tests | Covers                                                                                          |
+| ------------------------------- | ----- | ----------------------------------------------------------------------------------------------- |
+| `test/characterization.test.js` | 39    | every route, credential precedence, fallbacks, CORS, metrics text, logging                      |
+| `test/phase1.test.js`           | 29    | ★C2, ★S4, ★N3, ★P2, ★N2, ★P1                                                                    |
+| `test/phase1b.test.js`          | 11    | ★N5, ★N6, ★N8                                                                                   |
+| `test/phase3.test.js`           | 86    | classification, retry phases, coalescing, orphan capture, idempotency keys, annotations         |
+| `test/phase4.test.js`           | 14    | three deadlines, backpressure, bounded capture, concurrency limiter                             |
+| `test/phase5.test.js`           | 41    | origin/host policy, scoped CORS, viewer protection, redaction, ★N9–★N11                         |
+| `test/unit.test.js`             | 52    | pure modules: jsonrpc, errors, metrics, respond, security, ratelimit                            |
+| `test/config.test.js`           | 13    | config drift, owner defaults, coherence                                                         |
+| `test/deploy.test.js`           | 18    | Dockerfile, compose, systemd, docs consistency                                                  |
+| `test/bugs.test.js`             | 1     | P4 answer: only `prompts/list` may be answered locally, resource methods stay upstream          |
+| `test/probe.test.js`            | 5     | P4 probe safety rails: opt-in flag, CI refusal, key from env only, not wired into CI            |
+| `test/s5-async.test.js`         | 4     | S5: no sync fs/exec on the request path, viewer sees async writes, rotation still caps          |
+| `test/deploy.test.js`           | 20    | Dockerfile, compose, systemd, docs, and two CI guards (no glob in `--test`, health before stop) |
 
 No test contacts the real Stitch endpoint.
 
@@ -496,11 +495,11 @@ No test contacts the real Stitch endpoint.
 > pipeline green for the first time (run `39133550810`: Node 20, 22, 24 and Docker all pass).
 > `package.json`, `package-lock.json` and `index.js` `VERSION` all report `1.0.1`.
 >
-> One follow-up remains:
+> **P4 is closed (2026-10-18).** The probe ran against the live endpoint: `prompts/list` resets the
+> HTTP/2 stream, while `resources/list` and `resources/templates/list` both answer `200` with an
+> empty collection — so only `prompts/list` may be answered locally, which is already the default.
+> The answer is encoded as an assertion in `test/bugs.test.js` and the result table is in
+> `README.md`.
 >
-> 1. **Close P4** — run the probe with the owner's key, then replace the `test.todo()` in
->    `test/bugs.test.js` with the observed answer and update §10.2:
->    `STITCH_API_KEY=... npm run probe:live -- --i-understand`
->    Verdicts are `implemented`, `implemented (empty)`, `not implemented (stream reset)` or
->    `not implemented (method not found)`. Only the last two justify a `LOCAL_FALLBACK_METHODS`
->    entry.
+> No findings remain open. Re-run the probe if Stitch changes its discovery surface:
+> `STITCH_API_KEY=... npm run probe:live -- --i-understand`.

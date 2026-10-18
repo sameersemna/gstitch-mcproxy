@@ -343,10 +343,12 @@ showed ~29,000 failed discovery cycles in a single day. The proxy now answers
 `GET`, `DELETE`, and `PUT` on `/mcp` are also answered locally with a JSON-RPC 405. Stitch
 returns a Google HTML error page for these, which is not a valid MCP response.
 
-The code also carries empty results for `resources/list` and `resources/templates/list`, but
-leaves them **out** of `LOCAL_FALLBACK_METHODS` because whether Stitch implements them has never
-been verified (finding P4 in `PROGRESS.md`). `scripts/live-probe.js` answers that question against
-the real endpoint; see [Probing P4](#probing-p4) below.
+`resources/list` and `resources/templates/list` are the opposite case: the code carries empty
+results for them, but they stay **out** of `LOCAL_FALLBACK_METHODS` because Stitch **does**
+implement both. Verified against the live endpoint on 2026-10-18 (finding P4): each answers `200`
+with an empty collection. Answering them locally would hide real data the day Stitch starts
+returning it, so only `prompts/list` is answered locally. See [Probing P4](#probing-p4) below to
+re-run that check.
 
 ## Metrics (Prometheus)
 
@@ -444,6 +446,15 @@ it fails, the other rows are reported as inconclusive and the script exits `1`.
 ```bash
 STITCH_API_KEY=... npm run probe:live -- --i-understand
 ```
+
+Result of the run on 2026-10-18:
+
+| Method                     | Verdict                               |
+| -------------------------- | ------------------------------------- |
+| `tools/list`               | control OK — 15 tools                 |
+| `prompts/list`             | not implemented (HTTP/2 stream reset) |
+| `resources/list`           | implemented — `200`, empty collection |
+| `resources/templates/list` | implemented — `200`, empty collection |
 
 Three guards, because it spends your credential:
 
