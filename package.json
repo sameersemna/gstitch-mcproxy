@@ -1,6 +1,6 @@
 {
   "name": "gstitch-mcproxy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Zero-dependency HTTP proxy between MCP clients and Google Stitch's MCP endpoint, with local fallbacks, retries, SSE streaming, logging, metrics and rate limiting.",
   "type": "commonjs",

@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-10-18
+
+Patch release: the first green CI run, plus the P4 probe and the S5 refactor that were written
+after `1.0.0` was tagged. No behaviour changes beyond the `1.0.0` migration notes.
+
 ### Fixed — CI
 
 - **The Node 20 leg of the matrix never ran the tests.** `npm test` passed `"test/**/*.test.js"`

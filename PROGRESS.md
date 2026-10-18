@@ -1,30 +1,31 @@
 # PROGRESS LEDGER — gstitch-mcproxy hardening
 
 > **This file is the memory of a long-horizon task.** Read it first, update it last.
-> Released `v1.0.0` on 2026-10-18 (PR #1, `hardening/v1` → `main`, branch deleted). Baseline: `2578c26`.
+> Released `v1.0.0` (PR #1, `hardening/v1` → `main`, branch deleted) and `v1.0.1` on 2026-10-18.
+> Baseline: `2578c26`.
 
 ---
 
 ## 1. Current phase / step / status
 
-| Field   | Value                                                                                                  |
-| ------- | ------------------------------------------------------------------------------------------------------ |
-| Phase   | **all phases complete (0–10); released as `v1.0.0`**                                                   |
-| Step    | P4 probe written and S5 fixed; the only remaining work is running the probe with the owner's key       |
-| Status  | Gates green: 313 tests → **312 pass / 1 todo / 0 fail** on Node 20 and 26, lint/format/typecheck clean |
-| Started | 2026-10-17                                                                                             |
+| Field   | Value                                                                                                      |
+| ------- | ---------------------------------------------------------------------------------------------------------- |
+| Phase   | **all phases complete (0–10); released as `v1.0.1`**                                                       |
+| Step    | CI green on Node 20/22/24 and Docker; the only remaining work is running the P4 probe with the owner's key |
+| Status  | Gates green: 313 tests → **312 pass / 1 todo / 0 fail** on Node 20 and 26, lint/format/typecheck clean     |
+| Started | 2026-10-17                                                                                                 |
 
 ## 2. Last green commit
 
 | Field     | Value                                                                  |
 | --------- | ---------------------------------------------------------------------- |
-| Branch    | `main` @ `v1.0.0` (`dd3448e`) plus the P4 probe and S5 commits         |
+| Branch    | `main` @ `v1.0.1`, CI run 39133550810 green on all four jobs           |
 | test      | 312 pass / 1 todo / 0 fail (313 tests, ~10 s), Node 20 and 26          |
 | lint      | clean                                                                  |
 | typecheck | clean (`scripts/**/*.js` is in `tsconfig.json` `include`)              |
 | verify    | `npm run verify` exits 0                                               |
-| coverage  | 94 % statements                                                        |
-| run.sh    | starts, `GET /health` ⇒ 200 (`version: 1.0.0`), `SIGTERM` ⇒ clean exit |
+| coverage  | 94 % statements (94.18 % measured on Node 20)                          |
+| run.sh    | starts, `GET /health` ⇒ 200 (`version: 1.0.1`), `SIGTERM` ⇒ clean exit |
 
 ## 3. Phase checklist
 
@@ -491,10 +492,11 @@ No test contacts the real Stitch endpoint.
 ## 16. Next action (exact, for a fresh session)
 
 > **Released.** PR #1 merged `hardening/v1` → `main` on 2026-10-18 (`dd3448e`), the branch was
-> deleted, and `v1.0.0` is tagged with `package.json`, `package-lock.json` and `index.js`
-> `VERSION` all at `1.0.0`.
+> deleted, and `v1.0.1` carries the P4 probe, the S5 refactor and the two CI fixes that turned the
+> pipeline green for the first time (run `39133550810`: Node 20, 22, 24 and Docker all pass).
+> `package.json`, `package-lock.json` and `index.js` `VERSION` all report `1.0.1`.
 >
-> Two follow-ups remain:
+> One follow-up remains:
 >
 > 1. **Close P4** — run the probe with the owner's key, then replace the `test.todo()` in
 >    `test/bugs.test.js` with the observed answer and update §10.2:
@@ -502,4 +504,3 @@ No test contacts the real Stitch endpoint.
 >    Verdicts are `implemented`, `implemented (empty)`, `not implemented (stream reset)` or
 >    `not implemented (method not found)`. Only the last two justify a `LOCAL_FALLBACK_METHODS`
 >    entry.
->    S5 is done: the request path is fully async and `test/s5-async.test.js` guards it.
