@@ -7,19 +7,19 @@
 
 ## 1. Current phase / step / status
 
-| Field   | Value                                                                                                          |
-| ------- | -------------------------------------------------------------------------------------------------------------- |
-| Phase   | **all phases complete (0–10); released as `v1.0.0`**                                                           |
-| Step    | P4 probe written and S5 fixed; the only remaining work is running the probe with the owner's key               |
-| Status  | Gates green: 311 tests → **310 pass / 1 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
-| Started | 2026-10-17                                                                                                     |
+| Field   | Value                                                                                                  |
+| ------- | ------------------------------------------------------------------------------------------------------ |
+| Phase   | **all phases complete (0–10); released as `v1.0.0`**                                                   |
+| Step    | P4 probe written and S5 fixed; the only remaining work is running the probe with the owner's key       |
+| Status  | Gates green: 313 tests → **312 pass / 1 todo / 0 fail** on Node 20 and 26, lint/format/typecheck clean |
+| Started | 2026-10-17                                                                                             |
 
 ## 2. Last green commit
 
 | Field     | Value                                                                  |
 | --------- | ---------------------------------------------------------------------- |
 | Branch    | `main` @ `v1.0.0` (`dd3448e`) plus the P4 probe and S5 commits         |
-| test      | 310 pass / 1 todo / 0 fail (311 tests, ~10 s)                          |
+| test      | 312 pass / 1 todo / 0 fail (313 tests, ~10 s), Node 20 and 26          |
 | lint      | clean                                                                  |
 | typecheck | clean (`scripts/**/*.js` is in `tsconfig.json` `include`)              |
 | verify    | `npm run verify` exits 0                                               |
@@ -470,20 +470,21 @@ finished code.
 
 ## 15. Test suite
 
-| File                            | Tests  | Covers                                                                                  |
-| ------------------------------- | ------ | --------------------------------------------------------------------------------------- |
-| `test/characterization.test.js` | 39     | every route, credential precedence, fallbacks, CORS, metrics text, logging              |
-| `test/phase1.test.js`           | 29     | ★C2, ★S4, ★N3, ★P2, ★N2, ★P1                                                            |
-| `test/phase1b.test.js`          | 11     | ★N5, ★N6, ★N8                                                                           |
-| `test/phase3.test.js`           | 86     | classification, retry phases, coalescing, orphan capture, idempotency keys, annotations |
-| `test/phase4.test.js`           | 14     | three deadlines, backpressure, bounded capture, concurrency limiter                     |
-| `test/phase5.test.js`           | 41     | origin/host policy, scoped CORS, viewer protection, redaction, ★N9–★N11                 |
-| `test/unit.test.js`             | 52     | pure modules: jsonrpc, errors, metrics, respond, security, ratelimit                    |
-| `test/config.test.js`           | 13     | config drift, owner defaults, coherence                                                 |
-| `test/deploy.test.js`           | 18     | Dockerfile, compose, systemd, docs consistency                                          |
-| `test/bugs.test.js`             | 1 todo | P4 — deliberately deferred                                                              |
-| `test/probe.test.js`            | 5      | P4 probe safety rails: opt-in flag, CI refusal, key from env only, not wired into CI    |
-| `test/s5-async.test.js`         | 4      | S5: no sync fs/exec on the request path, viewer sees async writes, rotation still caps  |
+| File                            | Tests  | Covers                                                                                          |
+| ------------------------------- | ------ | ----------------------------------------------------------------------------------------------- |
+| `test/characterization.test.js` | 39     | every route, credential precedence, fallbacks, CORS, metrics text, logging                      |
+| `test/phase1.test.js`           | 29     | ★C2, ★S4, ★N3, ★P2, ★N2, ★P1                                                                    |
+| `test/phase1b.test.js`          | 11     | ★N5, ★N6, ★N8                                                                                   |
+| `test/phase3.test.js`           | 86     | classification, retry phases, coalescing, orphan capture, idempotency keys, annotations         |
+| `test/phase4.test.js`           | 14     | three deadlines, backpressure, bounded capture, concurrency limiter                             |
+| `test/phase5.test.js`           | 41     | origin/host policy, scoped CORS, viewer protection, redaction, ★N9–★N11                         |
+| `test/unit.test.js`             | 52     | pure modules: jsonrpc, errors, metrics, respond, security, ratelimit                            |
+| `test/config.test.js`           | 13     | config drift, owner defaults, coherence                                                         |
+| `test/deploy.test.js`           | 18     | Dockerfile, compose, systemd, docs consistency                                                  |
+| `test/bugs.test.js`             | 1 todo | P4 — deliberately deferred                                                                      |
+| `test/probe.test.js`            | 5      | P4 probe safety rails: opt-in flag, CI refusal, key from env only, not wired into CI            |
+| `test/s5-async.test.js`         | 4      | S5: no sync fs/exec on the request path, viewer sees async writes, rotation still caps          |
+| `test/deploy.test.js`           | 20     | Dockerfile, compose, systemd, docs, and two CI guards (no glob in `--test`, health before stop) |
 
 No test contacts the real Stitch endpoint.
 

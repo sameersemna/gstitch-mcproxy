@@ -235,3 +235,35 @@ test("docs: SECURITY.md states the deliberate non-goals", () => {
   assert.match(security, /does \*\*not\*\* defend|not defend/i);
   assert.match(security, /no authentication|There is no authentication/i);
 });
+
+// ---------------------------------------------------------------------------
+// CI correctness — the pipeline that ships the image
+// ---------------------------------------------------------------------------
+
+test("ci: the test script does not rely on Node's glob expansion in --test", () => {
+  const pkg = JSON.parse(read("package.json"));
+
+  // Node 20 (the `engines` floor) treats a positional `--test` argument as a literal path, so
+  // `"test/**/*.test.js"` makes the whole matrix red with "Could not find". The shell has to do
+  // the expansion instead.
+  for (const script of ["test", "test:coverage"]) {
+    assert.doesNotMatch(pkg.scripts[script], /\*\*/, `${script} must not pass a glob to node`);
+    assert.match(pkg.scripts[script], /test\/\*\.test\.js/, `${script} must list the test files`);
+  }
+});
+
+test("ci: the container healthcheck is asserted before the container is stopped", () => {
+  const workflow = read(".github/workflows/ci.yml");
+
+  const healthcheckAt = workflow.indexOf("docker exec proxy");
+  const stopAt = workflow.indexOf("docker stop proxy");
+
+  assert.ok(healthcheckAt > 0, "the workflow must run the image's own healthcheck command");
+  assert.ok(stopAt > 0, "the workflow must stop the container");
+  // `docker stop` freezes the last recorded health status, so asserting after it tests nothing —
+  // which is exactly how the Docker job stayed red while looking meaningful.
+  assert.ok(
+    healthcheckAt < stopAt,
+    "the healthcheck must be asserted before `docker stop`, or the assertion is vacuous",
+  );
+});

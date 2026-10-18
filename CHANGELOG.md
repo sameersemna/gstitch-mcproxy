@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed — CI
+
+- **The Node 20 leg of the matrix never ran the tests.** `npm test` passed `"test/**/*.test.js"`
+  to `node --test`, and Node 20 (the `engines` floor) treats a positional argument as a literal
+  path — `Could not find '…/test/**/*.test.js'`. Node 22+ expand globs themselves, which is why
+  the failure only appeared on the oldest leg. The scripts now let the shell expand
+  `test/*.test.js`, and `test/deploy.test.js` fails if a glob comes back.
+- **The Docker job asserted container health after stopping the container.** `docker stop`
+  freezes the last recorded health status, so the assertion could not observe a broken
+  `HEALTHCHECK`. The job now checks that the image defines one, runs the image's own healthcheck
+  command inside the container, and only then stops it.
+
 ### Added
 
 - **`scripts/live-probe.js`** — the opt-in probe for finding P4. It asks the real Stitch endpoint
