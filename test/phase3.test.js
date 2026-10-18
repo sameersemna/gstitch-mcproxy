@@ -1416,3 +1416,123 @@ test("orphan: a SAFE call is aborted on client disconnect instead of detached", 
   assert.equal(retry.status === 504 || retry.status === 502, true, `got ${retry.status}`);
   assert.ok(upstream.count() >= 2, "a safe retry must reach the upstream again");
 });
+
+// ---------------------------------------------------------------------------
+// Explicit idempotency keys (ADR 0003 §6)
+// ---------------------------------------------------------------------------
+
+test("idempotency key: the same call with an Idempotency-Key header is not regenerated", async (t) => {
+  const upstream = await startFakeStitch([
+    { type: "json", body: { jsonrpc: "2.0", id: 1, result: { created: "p-once" } } },
+    { type: "json", body: { jsonrpc: "2.0", id: 1, result: { created: "p-twice" } } },
+  ]);
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const payload = (id) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name: "create_project", arguments: { title: "keyed" } },
+  });
+
+  const first = await proxy.postJson("/mcp", payload(900), {
+    headers: { "Idempotency-Key": "abc-123" },
+  });
+  assert.equal(first.status, 200);
+  assert.equal((await readJson(first)).result.created, "p-once");
+
+  // The result was DELIVERED, but an explicit key opts in to replay.
+  const second = await proxy.postJson("/mcp", payload(901), {
+    headers: { "Idempotency-Key": "abc-123" },
+  });
+  assert.equal(second.status, 200);
+  assert.equal(second.headers.get("x-proxy-replayed"), "true");
+  assert.equal((await readJson(second)).result.created, "p-once", "the original result is replayed");
+  assert.equal(upstream.count(), 1, "no second generation");
+});
+
+test("idempotency key: a _meta.idempotencyKey works the same way", async (t) => {
+  const upstream = await startFakeStitch([
+    { type: "json", body: { jsonrpc: "2.0", id: 1, result: { created: "meta-once" } } },
+    { type: "json", body: { jsonrpc: "2.0", id: 1, result: { created: "meta-twice" } } },
+  ]);
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const payload = (id) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: {
+      name: "create_project",
+      arguments: { title: "meta-keyed" },
+      _meta: { idempotencyKey: "meta-1" },
+    },
+  });
+
+  await proxy.postJson("/mcp", payload(910));
+  const second = await proxy.postJson("/mcp", payload(911));
+
+  assert.equal((await readJson(second)).result.created, "meta-once");
+  assert.equal(upstream.count(), 1);
+});
+
+test("idempotency key: without a key, a delivered result is NOT replayed", async (t) => {
+  // The false-dedupe guard: a deliberate second generation must actually happen.
+  const upstream = await startFakeStitch([
+    { type: "json", body: { jsonrpc: "2.0", id: 1, result: { created: "first" } } },
+    { type: "json", body: { jsonrpc: "2.0", id: 1, result: { created: "second" } } },
+  ]);
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  const payload = (id) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name: "create_project", arguments: { title: "deliberate" } },
+  });
+
+  assert.equal((await readJson(await proxy.postJson("/mcp", payload(920)))).result.created, "first");
+  assert.equal(
+    (await readJson(await proxy.postJson("/mcp", payload(921)))).result.created,
+    "second",
+    "without an explicit key the second call must really run",
+  );
+  assert.equal(upstream.count(), 2);
+});
+
+test("idempotency key: a key does not leak between different tools", async (t) => {
+  const upstream = await startFakeStitch({ type: "json", body: { jsonrpc: "2.0", id: 1, result: {} } });
+  const proxy = await startProxy({ STITCH_URL: upstream.url, STITCH_API_KEY: "env-key" });
+  t.after(() => upstream.close());
+  t.after(() => proxy.stop());
+
+  await proxy.postJson(
+    "/mcp",
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "create_project", arguments: { a: 1 } },
+    },
+    { headers: { "Idempotency-Key": "shared" } },
+  );
+
+  await proxy.postJson(
+    "/mcp",
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "create_screen", arguments: { a: 1 } },
+    },
+    { headers: { "Idempotency-Key": "shared" } },
+  );
+
+  assert.equal(upstream.count(), 2, "the same key on a different tool is a different operation");
+});
