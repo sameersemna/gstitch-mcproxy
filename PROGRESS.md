@@ -9,17 +9,17 @@
 
 | Field | Value |
 |---|---|
-| Phase | **2 — Modularize (pure refactor)**, in progress |
-| Step | 2.1 done (`errors`, `jsonrpc`, `metrics` + 24 unit tests). Next: `http/respond`, `http/security`, `http/ratelimit` |
-| Status | Gates green: 121 tests → **105 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
+| Phase | **3 — Idempotency, retry safety and duplicate suppression**, in progress |
+| Step | 3.1–3.4 and 3.9 done (classification, phase-aware retry, `-32008`, coalescing, replay, annotations). Remaining: 3.5 orphan capture, 3.6 explicit-key wiring tests, 3.10 `tools/list` caching |
+| Status | Gates green: 228 tests → **212 pass / 16 todo / 0 fail**, lint clean, typecheck clean, `npm run verify` exits 0 |
 | Started | 2026-10-17 |
 
 ## 2. Last green commit
 
 | Field | Value |
 |---|---|
-| SHA | **`6c0be4f`** — `test: unit-test the pure modules extracted in phase 2` |
-| test | 105 pass / 16 todo / 0 fail (121 tests) |
+| SHA | **`c42a7b9`** — `feat: annotate tools/list so clients can warn before unsafe calls (phase 3)` |
+| test | 212 pass / 16 todo / 0 fail (228 tests) |
 | lint | clean |
 | typecheck | clean |
 | verify | `npm run verify` exits 0 |
@@ -29,8 +29,8 @@
 
 - [x] **Phase 0** — Baseline, packaging and harness — ✅ `920b4ee`
 - [x] **Phase 1** — Crash-proofing and correctness — ✅ `dfd243c` + `78cccf8`
-- [ ] **Phase 2** — Modularize (pure refactor) — in progress: `2603fa0` + `6c0be4f`
-- [ ] **Phase 3** — Idempotency, retry safety and duplicate suppression
+- [x] **Phase 2** — Modularize (pure refactor) — `2603fa0` … `59957ff` (config isolation deferred to Phase 6, guarded)
+- [ ] **Phase 3** — Idempotency, retry safety and duplicate suppression — in progress: `b96e3e7` + `c42a7b9`
 - [ ] **Phase 4** — Streaming and upstream I/O
 - [ ] **Phase 5** — Security model
 - [ ] **Phase 6** — Configuration, observability and lifecycle
@@ -156,7 +156,7 @@ and `MCP_SERVER_HOST='localhost'`, which contradicts the code defaults.
 
 ---
 
-## 7. Request classification table (source of truth — draft, finalised in Phase 3)
+## 7. Request classification table (source of truth — **finalised in Phase 3**, code: `src/mcp/classify.js`)
 
 Classification decides **retry safety**, **in-flight coalescing**, **orphan capture** and
 **annotation injection**. Unknown ⇒ **unsafe**.
@@ -191,7 +191,7 @@ Classification decides **retry safety**, **in-flight coalescing**, **orphan capt
 |---|---|---|
 | [0001](docs/adr/0001-language-and-typechecking.md) | Language & type checking: keep JS + `checkJs` | **Accepted** (Phase 0) |
 | [0002](docs/adr/0002-module-layout.md) | Module layout | **Accepted** (Phase 2) |
-| 0003 | Idempotency & retry safety | Phase 3 |
+| [0003](docs/adr/0003-idempotency.md) | Idempotency & retry safety | **Accepted** (Phase 3) |
 | 0004 | Streaming | Phase 4 |
 | 0005 | Security model | Phase 5 |
 | 0006 | Tooling & CI | Phase 7 |
@@ -284,7 +284,7 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 
 | ID | Reproduced | Evidence (actual observed output) | Regression test |
 |---|---|---|---|
-| ★C1 | ✅ **YES** | Fake upstream that resets the socket after receiving a `tools/call create_project`: upstream **received `create_project` 3 times** (`{"count":3,...}`). Client got `502 {"code":-32006,"message":"...fetch failed (ECONNRESET)"}`. | `test/bugs.test.js` → Phase 3 |
+| ★C1 | ✅ **YES** | Fake upstream that resets the socket after receiving a `tools/call create_project`: upstream **received `create_project` 3 times** (`{"count":3,...}`). Client got `502 {"code":-32006,"message":"...fetch failed (ECONNRESET)"}`. | **FIXED `b96e3e7`** — 12 end-to-end tests in `test/phase3.test.js`; upstream now receives it **exactly once** and the client gets `-32008` |
 | ★C2 | ✅ **YES** | `printf 'GET /health HTTP/1.1\r\nHost: [bad\r\n\r\n' \| nc 127.0.0.1 8799` ⇒ process **died** (`ERR_INVALID_URL`, `base: 'http://[bad'`, `Node.js v26.3.0` on stdout, port no longer listening). | **FIXED `dfd243c`** — 6 tests in `test/phase1.test.js`; verified with 50 malformed Hosts in a row |
 | ★C3 | ✅ **YES** (read path proven; write path follows from identical code) | Preflight/actual request from `Origin: https://evil.example` ⇒ `Access-Control-Allow-Origin: *`; `POST /token` with **no credentials** ⇒ `{"access_token":"local-proxy-token"}`. | → Phase 5 |
 | ★C4 | ✅ **YES** | `GET /api/logs` with `Origin: https://evil.example` ⇒ **200** + `access-control-allow-origin: *` (log dir listing, project IDs, sizes). `/health` also 200 with no auth. | → Phase 5 |
@@ -296,7 +296,7 @@ Display-name precedence: `title`, then `annotations.title`, then `name`.
 |---|---|---|---|
 | ★P1 | ✅ **YES** | Client sent `MCP-Protocol-Version: 2025-06-18`, `Mcp-Session-Id: client-sess-1`, `Last-Event-ID: 42`. Upstream received **only** `x-goog-api-key`, `content-type`, `accept`, `accept-language`, `accept-encoding` — all three MCP headers **absent**. Upstream replied with `Mcp-Session-Id`, `MCP-Protocol-Version`, `Retry-After: 7`, `WWW-Authenticate`; the client received **only** `Content-Type` (+ CORS). | **FIXED `dfd243c`** — 5 tests; explicit request/response allow-lists |
 | ★P2 | ✅ **YES** | 413 path: body contained `"id":55`, response was `{"jsonrpc":"2.0","error":{"code":-32007,...},"id":null}` (`id` lost). Same shape on the 401 and 502 paths. | **FIXED `dfd243c`** — 7 tests incl. `id:0`, string ids and arrays |
-| P3 | read-only | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element. | Phase 3 |
+| P3 | read-only | `buildLocalFallbackResponse` returns `null` for arrays; `parseJsonRpcMetadata` handles them for logging but classification/logging assume a single method. Spec confirms batching is **not** part of MCP ⇒ pass through unchanged, but classify by the most-unsafe element. | **FIXED `b96e3e7`** — `classifyRequest` reduces a batch to its most unsafe element, and `rewriteJsonRpcId` handles arrays |
 | P4 | not reproduced | `emptyResults` has entries for `resources/list` and `resources/templates/list`, but `LOCAL_FALLBACK_METHODS` defaults to `prompts/list` only. Whether Stitch implements the others is **unknown** → `scripts/live-probe.js` (Phase 7), owner key required. | Phase 7 |
 | P5 | read-only | `notifications/cancelled` is forwarded upstream but never aborts the in-flight upstream request. Note: on Streamable HTTP ≥ 2026-07-28 cancellation *is* stream closure, so the proxy's own client-close handling is the primary mechanism. | Phase 3 |
 
@@ -427,7 +427,7 @@ Deliberate behaviour changes (all recorded):
 | `-32601` | Not found (404) | router fallthrough |
 | **`-32600`** | **Invalid Request (400)** | **malformed `Host` or malformed HTTP (added in Phase 1)** |
 | **`-32603`** | **Internal error (500)** | **`handleRequest` safety wrapper (added in Phase 1)** |
-| `-32008` | _reserved_ | unsafe call with unknown outcome (Phase 3) |
+| `-32008` | **Outcome unknown (502)** | unsafe call that failed after being sent; check `list_screens`/`list_projects` before retrying |
 
 ---
 
@@ -465,6 +465,35 @@ written to a log or a terminal.
 | config onto the instance (multi-proxy isolation) | ⬜ | — |
 
 `index.js`: 3,400 → 3,300 lines so far.
+
+---
+
+## 17. Phase 3 progress
+
+| Item | Status | Where |
+|---|---|---|
+| Classification (safe/unsafe, batches, overrides, fail-closed) | ✅ `b96e3e7` | `src/mcp/classify.js` |
+| Phase-aware retry (`connect`/`sent`/`response`) + full jitter + `Retry-After` | ✅ `b96e3e7` | `src/upstream/retry.js` |
+| `-32008` outcome-unknown response | ✅ `b96e3e7` | `index.js` |
+| In-flight coalescing (unsafe only) + per-waiter id rewrite | ✅ `b96e3e7` | `src/idempotency/store.js`, `rewriteJsonRpcId` |
+| Result store + replay (LRU, byte caps, TTL) | ✅ `b96e3e7` | `src/idempotency/store.js` |
+| `Idempotency-Key` / `_meta.idempotencyKey` | ✅ storage honours it; **needs explicit end-to-end tests** | |
+| `tools/list` annotation injection | ✅ `c42a7b9` | `annotateToolsList` |
+| **Orphan capture** (detach an unsafe request after client disconnect / timeout) | ⬜ next | |
+| `notifications/cancelled` for safe in-flight requests (P5) | ⬜ | |
+| `tools/list` caching to absorb discovery storms | ⬜ | |
+| Metrics for coalesced/replayed/orphaned | ⬜ | |
+
+### Deliberate behaviour changes in Phase 3
+
+1. Unsafe calls are no longer retried after any failure that occurs once the request has been
+   sent. They answer `-32008` instead of retrying silently or returning a generic `-502`.
+2. Identical concurrent unsafe calls now produce a single upstream request; the second caller's
+   response carries `X-Proxy-Coalesced: true`.
+3. A replayed response carries `X-Proxy-Replayed: true`.
+4. `tools/list` responses gain `annotations` when the upstream omits them.
+5. Unsafe calls buffer their response instead of streaming it. Required to share one result
+   between coalesced callers; safe calls still stream.
 
 ---
 
